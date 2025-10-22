@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { emitToUser } from '../socket.js';
 import { authenticatedProcedure, router } from '../trpc.js';
 
 const minutesSchema = z.number().int().min(0).max(1439);
@@ -50,6 +51,11 @@ export const parentRouter = router({
           nightStart: input.start,
           nightEnd: input.end
         }
+      });
+
+      emitToUser(input.childId, 'parent:nightWindow', {
+        start: input.start,
+        end: input.end
       });
 
       return link;

@@ -2,7 +2,9 @@ import { createHmac, randomUUID } from 'node:crypto';
 import QRCode from 'qrcode';
 import { addMinutes } from 'date-fns';
 import { z } from 'zod';
+import { emitToUser } from '../socket.js';
 import { authenticatedProcedure, router } from '../trpc.js';
+import { getConversationSummary } from '../utils/conversation.js';
 
 const secret = () => {
   const value = process.env.QR_SECRET ?? process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
@@ -117,7 +119,8 @@ export const friendsRouter = router({
               data: [
                 { userId: aId, role: 'member' },
                 { userId: bId, role: 'member' }
-              ]
+              ],
+              skipDuplicates: true
             }
           }
         },
@@ -125,6 +128,18 @@ export const friendsRouter = router({
           members: true
         }
       });
+
+      const [selfSummary, otherSummary] = await Promise.all([
+        getConversationSummary(ctx.prisma, conversation.id, ctx.user.id),
+        getConversationSummary(ctx.prisma, conversation.id, parsed.uid)
+      ]);
+
+      if (selfSummary) {
+        emitToUser(ctx.user.id, 'conversation:created', selfSummary);
+      }
+      if (otherSummary) {
+        emitToUser(parsed.uid, 'conversation:created', otherSummary);
+      }
 
       return { ok: true, conversationId: conversation.id };
     })

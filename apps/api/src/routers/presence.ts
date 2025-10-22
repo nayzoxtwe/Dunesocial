@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { emitToUser } from '../socket.js';
 import { authenticatedProcedure, router } from '../trpc.js';
+import { broadcastPresence } from '../utils/presence.js';
 
 export const presenceRouter = router({
   set: authenticatedProcedure
@@ -20,7 +20,7 @@ export const presenceRouter = router({
         }
       });
 
-      emitToUser(ctx.user.id, 'presence:update', { userId: ctx.user.id, status: input.status });
+      await broadcastPresence(ctx.prisma, ctx.user.id, input.status);
 
       return { status: input.status };
     })

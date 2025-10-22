@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { addHours } from 'date-fns';
 import { z } from 'zod';
+import { applyTeenNightMode } from '@dune/proto';
 import { broadcast } from '../socket.js';
 import { authenticatedProcedure, router } from '../trpc.js';
 
@@ -16,6 +17,15 @@ export const storyRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      if (ctx.user.role === 'TEEN') {
+        const now = new Date();
+        const nightStart = ctx.user.profile?.nightStart ?? undefined;
+        const nightEnd = ctx.user.profile?.nightEnd ?? undefined;
+        if (applyTeenNightMode(now, nightStart ?? undefined, nightEnd ?? undefined)) {
+          throw new Error('Night mode active: stories are paused for teens');
+        }
+      }
+
       await mkdir(storiesDir, { recursive: true });
       const [meta, base64] = input.dataUrl.split(',');
       const ext = meta.includes('image/png') ? 'png' : meta.includes('image/gif') ? 'gif' : 'jpg';

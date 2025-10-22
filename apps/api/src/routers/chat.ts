@@ -1,6 +1,10 @@
 import { z } from 'zod';
-import { emitToConversation } from '../socket.js';
+import { emitToConversation, emitToUser } from '../socket.js';
 import { authenticatedProcedure, router } from '../trpc.js';
+import {
+  getConversationSummary,
+  listConversationSummaries
+} from '../utils/conversation.js';
 
 const messageKinds = ['text', 'image', 'gif', 'sticker', 'voice'] as const;
 
@@ -34,68 +38,29 @@ export const chatRouter = router({
               data: [
                 { userId: ctx.user.id, role: 'member' },
                 { userId: otherUser.id, role: 'member' }
-              ]
+              ],
+              skipDuplicates: true
             }
           }
         }
       });
 
+      const [selfSummary, otherSummary] = await Promise.all([
+        getConversationSummary(ctx.prisma, conversation.id, ctx.user.id),
+        getConversationSummary(ctx.prisma, conversation.id, otherUser.id)
+      ]);
+
+      if (selfSummary) {
+        emitToUser(ctx.user.id, 'conversation:created', selfSummary);
+      }
+      if (otherSummary) {
+        emitToUser(otherUser.id, 'conversation:created', otherSummary);
+      }
+
       return { id: conversation.id };
     }),
   list: authenticatedProcedure.query(async ({ ctx }) => {
-    const conversations = await ctx.prisma.conversation.findMany({
-      where: {
-        members: {
-          some: { userId: ctx.user.id }
-        }
-      },
-      include: {
-        members: {
-          include: {
-            user: {
-              include: { profile: true }
-            }
-          }
-        },
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          include: {
-            sender: {
-              include: { profile: true }
-            }
-          }
-        }
-      },
-      orderBy: { updatedAt: 'desc' }
-    });
-
-    return conversations.map((conversation) => {
-      const lastMessage = conversation.messages[0];
-      const otherMember = conversation.members.find((member) => member.userId !== ctx.user.id);
-      return {
-        id: conversation.id,
-        type: conversation.type,
-        lastMessage: lastMessage
-          ? {
-              id: lastMessage.id,
-              text: lastMessage.text,
-              createdAt: lastMessage.createdAt,
-              sender: {
-                id: lastMessage.sender.id,
-                display: lastMessage.sender.profile?.display ?? lastMessage.sender.email
-              }
-            }
-          : null,
-        participant: otherMember
-          ? {
-              id: otherMember.user.id,
-              display: otherMember.user.profile?.display ?? otherMember.user.email,
-              status: otherMember.user.profile?.status ?? 'offline'
-            }
-          : null
-      };
-    });
+    return listConversationSummaries(ctx.prisma, ctx.user.id);
   }),
   history: authenticatedProcedure
     .input(

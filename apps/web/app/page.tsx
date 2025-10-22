@@ -6,7 +6,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import dynamic from 'next/dynamic';
 import { signIn, signOut, useSession } from 'next-auth/react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createTrpcClient } from '@/lib/trpcClient';
 import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket';
 import { useForm } from 'react-hook-form';
@@ -65,6 +65,17 @@ export default function HomePage() {
   const [isTeen, setIsTeen] = useState(false);
   const [clientReady, setClientReady] = useState(false);
 
+  const selectedConversationRef = useRef<string | null>(null);
+  const isTeenRef = useRef(false);
+
+  useEffect(() => {
+    selectedConversationRef.current = selectedConversation;
+  }, [selectedConversation]);
+
+  useEffect(() => {
+    isTeenRef.current = isTeen;
+  }, [isTeen]);
+
   const client = useMemo(() => {
     if (session?.apiToken) {
       return createTrpcClient(session.apiToken);
@@ -104,27 +115,45 @@ export default function HomePage() {
   }, [client, session?.apiToken, loadInitialData]);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    conversations.forEach((conversation) => {
+      socket.emit('joinConversation', { conversationId: conversation.id });
+    });
+  }, [conversations]);
+
+  useEffect(() => {
     if (!session?.apiToken) return;
     const socket = connectSocket(session.apiToken);
-    socket.on('message:new', (payload: MessageItem & { conversationId: string }) => {
-      setConversations((prev) =>
-        prev.map((conv) =>
-          conv.id === payload.conversationId
-            ? {
-                ...conv,
-                lastMessage: {
-                  id: payload.id,
-                  text: payload.text,
-                  createdAt: payload.createdAt,
-                  sender: payload.sender
-                }
-              }
-            : conv
-        )
-      );
-      setMessages((prev) => (payload.conversationId === selectedConversation ? [...prev, payload] : prev));
-    });
-    socket.on('typing', ({ userId }) => {
+
+    const handleMessageNew = (payload: MessageItem & { conversationId: string }) => {
+      setConversations((prev) => {
+        const existing = prev.find((conv) => conv.id === payload.conversationId);
+        if (!existing) return prev;
+        const updated = {
+          ...existing,
+          lastMessage: {
+            id: payload.id,
+            text: payload.text,
+            createdAt: payload.createdAt,
+            sender: payload.sender
+          }
+        };
+        const others = prev.filter((conv) => conv.id !== payload.conversationId);
+        return [updated, ...others];
+      });
+      setMessages((prev) => {
+        if (selectedConversationRef.current !== payload.conversationId) {
+          return prev;
+        }
+        if (prev.some((message) => message.id === payload.id)) {
+          return prev;
+        }
+        return [...prev, payload];
+      });
+    };
+
+    const handleTyping = ({ userId }: { userId: string }) => {
       setTypingUsers((prev) => new Set(prev).add(userId));
       setTimeout(() => {
         setTypingUsers((prev) => {
@@ -133,20 +162,52 @@ export default function HomePage() {
           return next;
         });
       }, 1500);
-    });
-    socket.on('story:new', (story: StoryItem) => {
+    };
+
+    const handleStoryNew = (story: StoryItem) => {
       setStories((prev) => [story, ...prev]);
-    });
-    socket.on('story:expired', (ids: string[]) => {
+    };
+
+    const handleStoryExpired = (ids: string[]) => {
       setStories((prev) => prev.filter((story) => !ids.includes(story.id)));
-    });
-    socket.on('wallet:update', ({ balance }: { balance: number }) => {
-      setWallet((prev) => (prev ? { ...prev, wallet: { coins: balance }, transfers: prev.transfers } : prev));
-    });
-    socket.on('presence:update', ({ userId, status: presence }) => {
-      setFriends((prev) =>
-        prev.map((friend) => (friend.id === userId ? { ...friend, status: presence } : friend))
+    };
+
+    const handleWalletUpdate = ({ balance }: { balance: number }) => {
+      setWallet((prev) =>
+        prev
+          ? {
+              ...prev,
+              wallet: { coins: balance }
+            }
+          : { wallet: { coins: balance }, transfers: [] }
       );
+    };
+
+    const handleWalletTransfer = ({
+      balance,
+      transfer
+    }: {
+      balance: number;
+      transfer: WalletState['transfers'][number];
+      direction: 'incoming' | 'outgoing';
+    }) => {
+      setWallet((prev) => {
+        const baseTransfers = prev?.transfers ?? [];
+        const exists = baseTransfers.some((item) => item.id === transfer.id);
+        const nextTransfers = exists ? baseTransfers : [transfer, ...baseTransfers].slice(0, 20);
+        return {
+          wallet: { coins: balance },
+          transfers: nextTransfers
+        };
+      });
+    };
+
+    const handlePresenceUpdate = ({ userId, status: presence }: { userId: string; status: string }) => {
+      setFriends((prev) => {
+        const exists = prev.some((friend) => friend.id === userId);
+        if (!exists) return prev;
+        return prev.map((friend) => (friend.id === userId ? { ...friend, status: presence } : friend));
+      });
       setConversations((prev) =>
         prev.map((conv) =>
           conv.participant?.id === userId
@@ -157,16 +218,94 @@ export default function HomePage() {
             : conv
         )
       );
-    });
+    };
+
+    const handleConversationCreated = async (summary: ConversationSummary) => {
+      setConversations((prev) => {
+        const filtered = prev.filter((conv) => conv.id !== summary.id);
+        return [summary, ...filtered];
+      });
+      if (summary.participant) {
+        setFriends((prev) => {
+          const exists = prev.some((friend) => friend.id === summary.participant?.id);
+          if (exists) {
+            return prev.map((friend) =>
+              friend.id === summary.participant?.id
+                ? { ...friend, display: summary.participant.display, status: summary.participant.status ?? friend.status }
+                : friend
+            );
+          }
+          return [
+            ...prev,
+            {
+              id: summary.participant.id,
+              display: summary.participant.display,
+              status: summary.participant.status ?? 'offline'
+            }
+          ];
+        });
+      }
+      getSocket()?.emit('joinConversation', { conversationId: summary.id });
+
+      if (!client) return;
+
+      try {
+        const history = await client.chat.history.query({ conversationId: summary.id, limit: 50 });
+        if (!selectedConversationRef.current) {
+          setSelectedConversation(summary.id);
+          selectedConversationRef.current = summary.id;
+          setMessages(history.items as MessageItem[]);
+        } else if (selectedConversationRef.current === summary.id) {
+          setMessages(history.items as MessageItem[]);
+        }
+      } catch (error) {
+        console.error('Failed to load conversation history', error);
+      }
+    };
+
+    const handleParentNightWindow = ({
+      start,
+      end
+    }: {
+      start: number;
+      end: number;
+    }) => {
+      if (!isTeenRef.current) return;
+      setNightModeActive(applyTeenNightMode(new Date(), start, end));
+    };
+
+    socket.on('message:new', handleMessageNew);
+    socket.on('typing', handleTyping);
+    socket.on('story:new', handleStoryNew);
+    socket.on('story:expired', handleStoryExpired);
+    socket.on('wallet:update', handleWalletUpdate);
+    socket.on('wallet:transfer', handleWalletTransfer);
+    socket.on('presence:update', handlePresenceUpdate);
+    socket.on('conversation:created', handleConversationCreated);
+    socket.on('parent:nightWindow', handleParentNightWindow);
+
+    if (selectedConversationRef.current) {
+      socket.emit('joinConversation', { conversationId: selectedConversationRef.current });
+    }
+
     return () => {
-      socket.removeAllListeners();
+      socket.off('message:new', handleMessageNew);
+      socket.off('typing', handleTyping);
+      socket.off('story:new', handleStoryNew);
+      socket.off('story:expired', handleStoryExpired);
+      socket.off('wallet:update', handleWalletUpdate);
+      socket.off('wallet:transfer', handleWalletTransfer);
+      socket.off('presence:update', handlePresenceUpdate);
+      socket.off('conversation:created', handleConversationCreated);
+      socket.off('parent:nightWindow', handleParentNightWindow);
       disconnectSocket();
     };
-  }, [session?.apiToken, selectedConversation]);
+  }, [session?.apiToken, client]);
 
   useEffect(() => {
     if (!clientReady || !client) return;
     client.presence.set.mutate({ status: 'online' }).catch(() => undefined);
+    getSocket()?.emit('presence', { status: 'online' });
     return () => {
       getSocket()?.emit('presence', { status: 'offline' });
     };
@@ -176,6 +315,8 @@ export default function HomePage() {
     async (conversationId: string) => {
       if (!client) return;
       setSelectedConversation(conversationId);
+      selectedConversationRef.current = conversationId;
+      getSocket()?.emit('joinConversation', { conversationId });
       const history = await client.chat.history.query({ conversationId, limit: 50 });
       setMessages(history.items as MessageItem[]);
     },
@@ -253,9 +394,16 @@ export default function HomePage() {
       try {
         const parsed = JSON.parse(result);
         if (parsed.payload && parsed.signature) {
-          await client.friends.acceptQR.mutate({ payload: parsed.payload, signature: parsed.signature });
+          const response = await client.friends.acceptQR.mutate({ payload: parsed.payload, signature: parsed.signature });
           const convs = await client.chat.list.query();
           setConversations(convs);
+          if (response?.conversationId) {
+            setSelectedConversation(response.conversationId);
+            selectedConversationRef.current = response.conversationId;
+            getSocket()?.emit('joinConversation', { conversationId: response.conversationId });
+            const history = await client.chat.history.query({ conversationId: response.conversationId, limit: 50 });
+            setMessages(history.items as MessageItem[]);
+          }
         }
       } catch (error) {
         console.error('Invalid QR payload', error);

@@ -849,13 +849,17 @@ index 0000000000000000000000000000000000000000..e4ea06bf7c4de2945cc31cf067e105fe
 +});
 diff --git a/apps/api/src/routers/chat.ts b/apps/api/src/routers/chat.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8cd238c973f56e68ae286484ec58fadf17a949b
+index 0000000000000000000000000000000000000000..0b41da1279bd1a5fbe0fff2fe73855cf360c2fa7
 --- /dev/null
 +++ b/apps/api/src/routers/chat.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,160 @@
 +import { z } from 'zod';
-+import { emitToConversation } from '../socket.js';
++import { emitToConversation, emitToUser } from '../socket.js';
 +import { authenticatedProcedure, router } from '../trpc.js';
++import {
++  getConversationSummary,
++  listConversationSummaries
++} from '../utils/conversation.js';
 +
 +const messageKinds = ['text', 'image', 'gif', 'sticker', 'voice'] as const;
 +
@@ -889,68 +893,29 @@ index 0000000000000000000000000000000000000000..d8cd238c973f56e68ae286484ec58fad
 +              data: [
 +                { userId: ctx.user.id, role: 'member' },
 +                { userId: otherUser.id, role: 'member' }
-+              ]
++              ],
++              skipDuplicates: true
 +            }
 +          }
 +        }
 +      });
 +
++      const [selfSummary, otherSummary] = await Promise.all([
++        getConversationSummary(ctx.prisma, conversation.id, ctx.user.id),
++        getConversationSummary(ctx.prisma, conversation.id, otherUser.id)
++      ]);
++
++      if (selfSummary) {
++        emitToUser(ctx.user.id, 'conversation:created', selfSummary);
++      }
++      if (otherSummary) {
++        emitToUser(otherUser.id, 'conversation:created', otherSummary);
++      }
++
 +      return { id: conversation.id };
 +    }),
 +  list: authenticatedProcedure.query(async ({ ctx }) => {
-+    const conversations = await ctx.prisma.conversation.findMany({
-+      where: {
-+        members: {
-+          some: { userId: ctx.user.id }
-+        }
-+      },
-+      include: {
-+        members: {
-+          include: {
-+            user: {
-+              include: { profile: true }
-+            }
-+          }
-+        },
-+        messages: {
-+          orderBy: { createdAt: 'desc' },
-+          take: 1,
-+          include: {
-+            sender: {
-+              include: { profile: true }
-+            }
-+          }
-+        }
-+      },
-+      orderBy: { updatedAt: 'desc' }
-+    });
-+
-+    return conversations.map((conversation) => {
-+      const lastMessage = conversation.messages[0];
-+      const otherMember = conversation.members.find((member) => member.userId !== ctx.user.id);
-+      return {
-+        id: conversation.id,
-+        type: conversation.type,
-+        lastMessage: lastMessage
-+          ? {
-+              id: lastMessage.id,
-+              text: lastMessage.text,
-+              createdAt: lastMessage.createdAt,
-+              sender: {
-+                id: lastMessage.sender.id,
-+                display: lastMessage.sender.profile?.display ?? lastMessage.sender.email
-+              }
-+            }
-+          : null,
-+        participant: otherMember
-+          ? {
-+              id: otherMember.user.id,
-+              display: otherMember.user.profile?.display ?? otherMember.user.email,
-+              status: otherMember.user.profile?.status ?? 'offline'
-+            }
-+          : null
-+      };
-+    });
++    return listConversationSummaries(ctx.prisma, ctx.user.id);
 +  }),
 +  history: authenticatedProcedure
 +    .input(
@@ -1050,15 +1015,17 @@ index 0000000000000000000000000000000000000000..d8cd238c973f56e68ae286484ec58fad
 +});
 diff --git a/apps/api/src/routers/friends.ts b/apps/api/src/routers/friends.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d38bb9fca483383d6d7b937d920d0bcf2c5124f7
+index 0000000000000000000000000000000000000000..9a5eb05641ecb79300ba33af33b5d42be2b4c7a8
 --- /dev/null
 +++ b/apps/api/src/routers/friends.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,146 @@
 +import { createHmac, randomUUID } from 'node:crypto';
 +import QRCode from 'qrcode';
 +import { addMinutes } from 'date-fns';
 +import { z } from 'zod';
++import { emitToUser } from '../socket.js';
 +import { authenticatedProcedure, router } from '../trpc.js';
++import { getConversationSummary } from '../utils/conversation.js';
 +
 +const secret = () => {
 +  const value = process.env.QR_SECRET ?? process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
@@ -1173,7 +1140,8 @@ index 0000000000000000000000000000000000000000..d38bb9fca483383d6d7b937d920d0bcf
 +              data: [
 +                { userId: aId, role: 'member' },
 +                { userId: bId, role: 'member' }
-+              ]
++              ],
++              skipDuplicates: true
 +            }
 +          }
 +        },
@@ -1182,16 +1150,29 @@ index 0000000000000000000000000000000000000000..d38bb9fca483383d6d7b937d920d0bcf
 +        }
 +      });
 +
++      const [selfSummary, otherSummary] = await Promise.all([
++        getConversationSummary(ctx.prisma, conversation.id, ctx.user.id),
++        getConversationSummary(ctx.prisma, conversation.id, parsed.uid)
++      ]);
++
++      if (selfSummary) {
++        emitToUser(ctx.user.id, 'conversation:created', selfSummary);
++      }
++      if (otherSummary) {
++        emitToUser(parsed.uid, 'conversation:created', otherSummary);
++      }
++
 +      return { ok: true, conversationId: conversation.id };
 +    })
 +});
 diff --git a/apps/api/src/routers/parent.ts b/apps/api/src/routers/parent.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c2c68a59972345ccb028375f1b5dd21214df954
+index 0000000000000000000000000000000000000000..73472de61a35d5c32f706d5835ca78d367f79dcd
 --- /dev/null
 +++ b/apps/api/src/routers/parent.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,63 @@
 +import { z } from 'zod';
++import { emitToUser } from '../socket.js';
 +import { authenticatedProcedure, router } from '../trpc.js';
 +
 +const minutesSchema = z.number().int().min(0).max(1439);
@@ -1245,18 +1226,23 @@ index 0000000000000000000000000000000000000000..8c2c68a59972345ccb028375f1b5dd21
 +        }
 +      });
 +
++      emitToUser(input.childId, 'parent:nightWindow', {
++        start: input.start,
++        end: input.end
++      });
++
 +      return link;
 +    })
 +});
 diff --git a/apps/api/src/routers/presence.ts b/apps/api/src/routers/presence.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..00b453ac6448250d350e17450193cbc054bb558e
+index 0000000000000000000000000000000000000000..1a10d2bd77ab431724a912a543ed926d8144995a
 --- /dev/null
 +++ b/apps/api/src/routers/presence.ts
 @@ -0,0 +1,27 @@
 +import { z } from 'zod';
-+import { emitToUser } from '../socket.js';
 +import { authenticatedProcedure, router } from '../trpc.js';
++import { broadcastPresence } from '../utils/presence.js';
 +
 +export const presenceRouter = router({
 +  set: authenticatedProcedure
@@ -1276,22 +1262,23 @@ index 0000000000000000000000000000000000000000..00b453ac6448250d350e17450193cbc0
 +        }
 +      });
 +
-+      emitToUser(ctx.user.id, 'presence:update', { userId: ctx.user.id, status: input.status });
++      await broadcastPresence(ctx.prisma, ctx.user.id, input.status);
 +
 +      return { status: input.status };
 +    })
 +});
 diff --git a/apps/api/src/routers/story.ts b/apps/api/src/routers/story.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..232afde57086311ca06ff4714ed225d9b2e44722
+index 0000000000000000000000000000000000000000..e9e1cccaa89257082cca5e72c70b74a92fd37637
 --- /dev/null
 +++ b/apps/api/src/routers/story.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,72 @@
 +import { randomUUID } from 'node:crypto';
 +import { mkdir, writeFile } from 'node:fs/promises';
 +import path from 'node:path';
 +import { addHours } from 'date-fns';
 +import { z } from 'zod';
++import { applyTeenNightMode } from '@dune/proto';
 +import { broadcast } from '../socket.js';
 +import { authenticatedProcedure, router } from '../trpc.js';
 +
@@ -1305,6 +1292,15 @@ index 0000000000000000000000000000000000000000..232afde57086311ca06ff4714ed225d9
 +      })
 +    )
 +    .mutation(async ({ ctx, input }) => {
++      if (ctx.user.role === 'TEEN') {
++        const now = new Date();
++        const nightStart = ctx.user.profile?.nightStart ?? undefined;
++        const nightEnd = ctx.user.profile?.nightEnd ?? undefined;
++        if (applyTeenNightMode(now, nightStart ?? undefined, nightEnd ?? undefined)) {
++          throw new Error('Night mode active: stories are paused for teens');
++        }
++      }
++
 +      await mkdir(storiesDir, { recursive: true });
 +      const [meta, base64] = input.dataUrl.split(',');
 +      const ext = meta.includes('image/png') ? 'png' : meta.includes('image/gif') ? 'gif' : 'jpg';
@@ -1418,10 +1414,10 @@ index 0000000000000000000000000000000000000000..29d0529f3e239ba3245933532e5e2ac9
 +});
 diff --git a/apps/api/src/routers/wallet.ts b/apps/api/src/routers/wallet.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b97fa51212dea4bf57b921b854ab69377d1a8c1
+index 0000000000000000000000000000000000000000..074fd259654636a64bd31b9762e14fb52c2fa27a
 --- /dev/null
 +++ b/apps/api/src/routers/wallet.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,115 @@
 +import { startOfMonth } from 'date-fns';
 +import { z } from 'zod';
 +import { emitToUser } from '../socket.js';
@@ -1519,6 +1515,17 @@ index 0000000000000000000000000000000000000000..0b97fa51212dea4bf57b921b854ab693
 +      emitToUser(ctx.user.id, 'wallet:update', { balance: updatedSender.coins });
 +      emitToUser(input.toId, 'wallet:update', { balance: updatedRecipient.coins });
 +
++      emitToUser(ctx.user.id, 'wallet:transfer', {
++        balance: updatedSender.coins,
++        transfer,
++        direction: 'outgoing'
++      });
++      emitToUser(input.toId, 'wallet:transfer', {
++        balance: updatedRecipient.coins,
++        transfer,
++        direction: 'incoming'
++      });
++
 +      return {
 +        balance: updatedSender.coins,
 +        recipientBalance: updatedRecipient.coins,
@@ -1528,10 +1535,10 @@ index 0000000000000000000000000000000000000000..0b97fa51212dea4bf57b921b854ab693
 +});
 diff --git a/apps/api/src/server.ts b/apps/api/src/server.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e367219de9
+index 0000000000000000000000000000000000000000..789a769ea1dd9f78be313d11dbd9c42c2a03f73a
 --- /dev/null
 +++ b/apps/api/src/server.ts
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,201 @@
 +import './prisma.js';
 +import express from 'express';
 +import cors from 'cors';
@@ -1546,6 +1553,7 @@ index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e3
 +import { createContext } from './context.js';
 +import { prisma } from './prisma.js';
 +import { broadcast, emitToConversation, emitToUser, registerSocket } from './socket.js';
++import { broadcastPresence } from './utils/presence.js';
 +
 +const app = express();
 +const httpServer = createServer(app);
@@ -1622,8 +1630,19 @@ index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e3
 +    socket.join(`conversation:${membership.convId}`);
 +  });
 +
++  await broadcastPresence(prisma, userId, 'online');
++
 +  socket.on('typing', (payload: { conversationId: string }) => {
 +    emitToConversation(payload.conversationId, 'typing', { userId });
++  });
++
++  socket.on('joinConversation', async (payload: { conversationId: string }) => {
++    const membership = await prisma.member.findFirst({
++      where: { convId: payload.conversationId, userId }
++    });
++    if (membership) {
++      socket.join(`conversation:${payload.conversationId}`);
++    }
 +  });
 +
 +  socket.on('sendMessage', async (payload: { conversationId: string; text?: string; kind?: string }) => {
@@ -1665,7 +1684,7 @@ index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e3
 +        lastActiveAt: new Date()
 +      }
 +    });
-+    emitToUser(userId, 'presence:update', { userId, status: payload.status });
++    await broadcastPresence(prisma, userId, payload.status);
 +  });
 +
 +  socket.on('disconnect', async () => {
@@ -1679,6 +1698,7 @@ index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e3
 +        lastActiveAt: new Date()
 +      }
 +    });
++    await broadcastPresence(prisma, userId, 'offline');
 +  });
 +});
 +
@@ -1691,10 +1711,35 @@ index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e3
 +  }
 +});
 +
-+const port = Number(process.env.PORT ?? 4000);
-+httpServer.listen(port, () => {
-+  console.log(`API ready on http://localhost:${port}`);
++async function start() {
++  try {
++    await prisma.$connect();
++    console.log('Connected to database');
++  } catch (error) {
++    console.error('Failed to connect to database', error);
++    process.exit(1);
++  }
++
++  const port = Number(process.env.PORT ?? 4000);
++  httpServer.listen(port, () => {
++    console.log(`API ready on http://localhost:${port}`);
++  });
++}
++
++start().catch((error) => {
++  console.error('Failed to start server', error);
++  process.exit(1);
 +});
++
++async function shutdown() {
++  await prisma.$disconnect();
++  httpServer.close(() => {
++    process.exit(0);
++  });
++}
++
++process.on('SIGINT', shutdown);
++process.on('SIGTERM', shutdown);
 diff --git a/apps/api/src/socket.ts b/apps/api/src/socket.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..5612b73578abdaeef8806dcaeefdf831cf52cf30
@@ -1752,6 +1797,188 @@ index 0000000000000000000000000000000000000000..42d2b04c89d459de5674316238cae1d1
 +  }
 +  return next();
 +});
+diff --git a/apps/api/src/utils/conversation.ts b/apps/api/src/utils/conversation.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e443f444ff3728160571f6dbf90f0d4c7b9195fc
+--- /dev/null
++++ b/apps/api/src/utils/conversation.ts
+@@ -0,0 +1,124 @@
++import type { PrismaClient } from '@prisma/client';
++
++export type ConversationSummary = {
++  id: string;
++  type: string;
++  lastMessage: {
++    id: string;
++    text: string | null;
++    createdAt: Date;
++    sender: { id: string; display: string };
++  } | null;
++  participant: {
++    id: string;
++    display: string;
++    status: string | null;
++  } | null;
++};
++
++type ConversationWithRelations = NonNullable<
++  Awaited<ReturnType<typeof fetchConversationWithRelations>>
++>;
++
++async function fetchConversationWithRelations(prisma: PrismaClient, id: string) {
++  return prisma.conversation.findUnique({
++    where: { id },
++    include: {
++      members: {
++        include: {
++          user: {
++            include: {
++              profile: true
++            }
++          }
++        }
++      },
++      messages: {
++        orderBy: { createdAt: 'desc' },
++        take: 1,
++        include: {
++          sender: {
++            include: {
++              profile: true
++            }
++          }
++        }
++      }
++    }
++  });
++}
++
++function toSummary(conversation: ConversationWithRelations, viewerId: string): ConversationSummary {
++  const lastMessage = conversation.messages[0];
++  const otherMember = conversation.members.find((member) => member.userId !== viewerId);
++
++  return {
++    id: conversation.id,
++    type: conversation.type,
++    lastMessage: lastMessage
++      ? {
++          id: lastMessage.id,
++          text: lastMessage.text,
++          createdAt: lastMessage.createdAt,
++          sender: {
++            id: lastMessage.sender.id,
++            display: lastMessage.sender.profile?.display ?? lastMessage.sender.email
++          }
++        }
++      : null,
++    participant: otherMember
++      ? {
++          id: otherMember.user.id,
++          display: otherMember.user.profile?.display ?? otherMember.user.email,
++          status: otherMember.user.profile?.status ?? 'offline'
++        }
++      : null
++  };
++}
++
++export async function getConversationSummary(
++  prisma: PrismaClient,
++  conversationId: string,
++  viewerId: string
++): Promise<ConversationSummary | null> {
++  const conversation = await fetchConversationWithRelations(prisma, conversationId);
++  if (!conversation) {
++    return null;
++  }
++  return toSummary(conversation, viewerId);
++}
++
++export async function listConversationSummaries(prisma: PrismaClient, viewerId: string) {
++  const conversations = await prisma.conversation.findMany({
++    where: {
++      members: {
++        some: { userId: viewerId }
++      }
++    },
++    include: {
++      members: {
++        include: {
++          user: {
++            include: {
++              profile: true
++            }
++          }
++        }
++      },
++      messages: {
++        orderBy: { createdAt: 'desc' },
++        take: 1,
++        include: {
++          sender: {
++            include: {
++              profile: true
++            }
++          }
++        }
++      }
++    },
++    orderBy: { updatedAt: 'desc' }
++  });
++
++  return conversations.map((conversation) => toSummary(conversation, viewerId));
++}
+diff --git a/apps/api/src/utils/presence.ts b/apps/api/src/utils/presence.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dcf15ec4b84600b31f74df1b69a3463185ab65ec
+--- /dev/null
++++ b/apps/api/src/utils/presence.ts
+@@ -0,0 +1,46 @@
++import type { PrismaClient } from '@prisma/client';
++import { emitToUser } from '../socket.js';
++
++export type PresenceStatus = 'online' | 'offline' | 'busy';
++
++export async function broadcastPresence(
++  prisma: PrismaClient,
++  userId: string,
++  status: PresenceStatus
++) {
++  const recipients = new Set<string>();
++  recipients.add(userId);
++
++  const friends = await prisma.friend.findMany({
++    where: {
++      state: 'ACCEPTED',
++      OR: [{ aId: userId }, { bId: userId }]
++    }
++  });
++
++  for (const friend of friends) {
++    recipients.add(friend.aId === userId ? friend.bId : friend.aId);
++  }
++
++  const memberships = await prisma.member.findMany({
++    where: { userId },
++    select: { convId: true }
++  });
++
++  if (memberships.length > 0) {
++    const otherMembers = await prisma.member.findMany({
++      where: {
++        convId: { in: memberships.map((membership) => membership.convId) },
++        NOT: { userId }
++      },
++      select: { userId: true }
++    });
++    for (const member of otherMembers) {
++      recipients.add(member.userId);
++    }
++  }
++
++  for (const recipient of recipients) {
++    emitToUser(recipient, 'presence:update', { userId, status });
++  }
++}
 diff --git a/apps/api/tsconfig.json b/apps/api/tsconfig.json
 new file mode 100644
 index 0000000000000000000000000000000000000000..94134fe604557a6e8121ca741ca3526c87ce0ef7
@@ -1848,10 +2075,10 @@ index 0000000000000000000000000000000000000000..c005dea03ec0dedf77fbd97560e5f317
 +}
 diff --git a/apps/web/app/page.tsx b/apps/web/app/page.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac72c1a4c15
+index 0000000000000000000000000000000000000000..77798be5dd3ff51034537e829261adda03e01faf
 --- /dev/null
 +++ b/apps/web/app/page.tsx
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,716 @@
 +'use client';
 +
 +import { BottomNav, MessageBubble, StoryBar } from '@dune/ui';
@@ -1860,7 +2087,7 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +import { fr } from 'date-fns/locale';
 +import dynamic from 'next/dynamic';
 +import { signIn, signOut, useSession } from 'next-auth/react';
-+import { useCallback, useEffect, useMemo, useState } from 'react';
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 +import { createTrpcClient } from '@/lib/trpcClient';
 +import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket';
 +import { useForm } from 'react-hook-form';
@@ -1919,6 +2146,17 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +  const [isTeen, setIsTeen] = useState(false);
 +  const [clientReady, setClientReady] = useState(false);
 +
++  const selectedConversationRef = useRef<string | null>(null);
++  const isTeenRef = useRef(false);
++
++  useEffect(() => {
++    selectedConversationRef.current = selectedConversation;
++  }, [selectedConversation]);
++
++  useEffect(() => {
++    isTeenRef.current = isTeen;
++  }, [isTeen]);
++
 +  const client = useMemo(() => {
 +    if (session?.apiToken) {
 +      return createTrpcClient(session.apiToken);
@@ -1958,27 +2196,45 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +  }, [client, session?.apiToken, loadInitialData]);
 +
 +  useEffect(() => {
++    const socket = getSocket();
++    if (!socket) return;
++    conversations.forEach((conversation) => {
++      socket.emit('joinConversation', { conversationId: conversation.id });
++    });
++  }, [conversations]);
++
++  useEffect(() => {
 +    if (!session?.apiToken) return;
 +    const socket = connectSocket(session.apiToken);
-+    socket.on('message:new', (payload: MessageItem & { conversationId: string }) => {
-+      setConversations((prev) =>
-+        prev.map((conv) =>
-+          conv.id === payload.conversationId
-+            ? {
-+                ...conv,
-+                lastMessage: {
-+                  id: payload.id,
-+                  text: payload.text,
-+                  createdAt: payload.createdAt,
-+                  sender: payload.sender
-+                }
-+              }
-+            : conv
-+        )
-+      );
-+      setMessages((prev) => (payload.conversationId === selectedConversation ? [...prev, payload] : prev));
-+    });
-+    socket.on('typing', ({ userId }) => {
++
++    const handleMessageNew = (payload: MessageItem & { conversationId: string }) => {
++      setConversations((prev) => {
++        const existing = prev.find((conv) => conv.id === payload.conversationId);
++        if (!existing) return prev;
++        const updated = {
++          ...existing,
++          lastMessage: {
++            id: payload.id,
++            text: payload.text,
++            createdAt: payload.createdAt,
++            sender: payload.sender
++          }
++        };
++        const others = prev.filter((conv) => conv.id !== payload.conversationId);
++        return [updated, ...others];
++      });
++      setMessages((prev) => {
++        if (selectedConversationRef.current !== payload.conversationId) {
++          return prev;
++        }
++        if (prev.some((message) => message.id === payload.id)) {
++          return prev;
++        }
++        return [...prev, payload];
++      });
++    };
++
++    const handleTyping = ({ userId }: { userId: string }) => {
 +      setTypingUsers((prev) => new Set(prev).add(userId));
 +      setTimeout(() => {
 +        setTypingUsers((prev) => {
@@ -1987,20 +2243,52 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +          return next;
 +        });
 +      }, 1500);
-+    });
-+    socket.on('story:new', (story: StoryItem) => {
++    };
++
++    const handleStoryNew = (story: StoryItem) => {
 +      setStories((prev) => [story, ...prev]);
-+    });
-+    socket.on('story:expired', (ids: string[]) => {
++    };
++
++    const handleStoryExpired = (ids: string[]) => {
 +      setStories((prev) => prev.filter((story) => !ids.includes(story.id)));
-+    });
-+    socket.on('wallet:update', ({ balance }: { balance: number }) => {
-+      setWallet((prev) => (prev ? { ...prev, wallet: { coins: balance }, transfers: prev.transfers } : prev));
-+    });
-+    socket.on('presence:update', ({ userId, status: presence }) => {
-+      setFriends((prev) =>
-+        prev.map((friend) => (friend.id === userId ? { ...friend, status: presence } : friend))
++    };
++
++    const handleWalletUpdate = ({ balance }: { balance: number }) => {
++      setWallet((prev) =>
++        prev
++          ? {
++              ...prev,
++              wallet: { coins: balance }
++            }
++          : { wallet: { coins: balance }, transfers: [] }
 +      );
++    };
++
++    const handleWalletTransfer = ({
++      balance,
++      transfer
++    }: {
++      balance: number;
++      transfer: WalletState['transfers'][number];
++      direction: 'incoming' | 'outgoing';
++    }) => {
++      setWallet((prev) => {
++        const baseTransfers = prev?.transfers ?? [];
++        const exists = baseTransfers.some((item) => item.id === transfer.id);
++        const nextTransfers = exists ? baseTransfers : [transfer, ...baseTransfers].slice(0, 20);
++        return {
++          wallet: { coins: balance },
++          transfers: nextTransfers
++        };
++      });
++    };
++
++    const handlePresenceUpdate = ({ userId, status: presence }: { userId: string; status: string }) => {
++      setFriends((prev) => {
++        const exists = prev.some((friend) => friend.id === userId);
++        if (!exists) return prev;
++        return prev.map((friend) => (friend.id === userId ? { ...friend, status: presence } : friend));
++      });
 +      setConversations((prev) =>
 +        prev.map((conv) =>
 +          conv.participant?.id === userId
@@ -2011,16 +2299,94 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +            : conv
 +        )
 +      );
-+    });
++    };
++
++    const handleConversationCreated = async (summary: ConversationSummary) => {
++      setConversations((prev) => {
++        const filtered = prev.filter((conv) => conv.id !== summary.id);
++        return [summary, ...filtered];
++      });
++      if (summary.participant) {
++        setFriends((prev) => {
++          const exists = prev.some((friend) => friend.id === summary.participant?.id);
++          if (exists) {
++            return prev.map((friend) =>
++              friend.id === summary.participant?.id
++                ? { ...friend, display: summary.participant.display, status: summary.participant.status ?? friend.status }
++                : friend
++            );
++          }
++          return [
++            ...prev,
++            {
++              id: summary.participant.id,
++              display: summary.participant.display,
++              status: summary.participant.status ?? 'offline'
++            }
++          ];
++        });
++      }
++      getSocket()?.emit('joinConversation', { conversationId: summary.id });
++
++      if (!client) return;
++
++      try {
++        const history = await client.chat.history.query({ conversationId: summary.id, limit: 50 });
++        if (!selectedConversationRef.current) {
++          setSelectedConversation(summary.id);
++          selectedConversationRef.current = summary.id;
++          setMessages(history.items as MessageItem[]);
++        } else if (selectedConversationRef.current === summary.id) {
++          setMessages(history.items as MessageItem[]);
++        }
++      } catch (error) {
++        console.error('Failed to load conversation history', error);
++      }
++    };
++
++    const handleParentNightWindow = ({
++      start,
++      end
++    }: {
++      start: number;
++      end: number;
++    }) => {
++      if (!isTeenRef.current) return;
++      setNightModeActive(applyTeenNightMode(new Date(), start, end));
++    };
++
++    socket.on('message:new', handleMessageNew);
++    socket.on('typing', handleTyping);
++    socket.on('story:new', handleStoryNew);
++    socket.on('story:expired', handleStoryExpired);
++    socket.on('wallet:update', handleWalletUpdate);
++    socket.on('wallet:transfer', handleWalletTransfer);
++    socket.on('presence:update', handlePresenceUpdate);
++    socket.on('conversation:created', handleConversationCreated);
++    socket.on('parent:nightWindow', handleParentNightWindow);
++
++    if (selectedConversationRef.current) {
++      socket.emit('joinConversation', { conversationId: selectedConversationRef.current });
++    }
++
 +    return () => {
-+      socket.removeAllListeners();
++      socket.off('message:new', handleMessageNew);
++      socket.off('typing', handleTyping);
++      socket.off('story:new', handleStoryNew);
++      socket.off('story:expired', handleStoryExpired);
++      socket.off('wallet:update', handleWalletUpdate);
++      socket.off('wallet:transfer', handleWalletTransfer);
++      socket.off('presence:update', handlePresenceUpdate);
++      socket.off('conversation:created', handleConversationCreated);
++      socket.off('parent:nightWindow', handleParentNightWindow);
 +      disconnectSocket();
 +    };
-+  }, [session?.apiToken, selectedConversation]);
++  }, [session?.apiToken, client]);
 +
 +  useEffect(() => {
 +    if (!clientReady || !client) return;
 +    client.presence.set.mutate({ status: 'online' }).catch(() => undefined);
++    getSocket()?.emit('presence', { status: 'online' });
 +    return () => {
 +      getSocket()?.emit('presence', { status: 'offline' });
 +    };
@@ -2030,6 +2396,8 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +    async (conversationId: string) => {
 +      if (!client) return;
 +      setSelectedConversation(conversationId);
++      selectedConversationRef.current = conversationId;
++      getSocket()?.emit('joinConversation', { conversationId });
 +      const history = await client.chat.history.query({ conversationId, limit: 50 });
 +      setMessages(history.items as MessageItem[]);
 +    },
@@ -2107,9 +2475,16 @@ index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac7
 +      try {
 +        const parsed = JSON.parse(result);
 +        if (parsed.payload && parsed.signature) {
-+          await client.friends.acceptQR.mutate({ payload: parsed.payload, signature: parsed.signature });
++          const response = await client.friends.acceptQR.mutate({ payload: parsed.payload, signature: parsed.signature });
 +          const convs = await client.chat.list.query();
 +          setConversations(convs);
++          if (response?.conversationId) {
++            setSelectedConversation(response.conversationId);
++            selectedConversationRef.current = response.conversationId;
++            getSocket()?.emit('joinConversation', { conversationId: response.conversationId });
++            const history = await client.chat.history.query({ conversationId: response.conversationId, limit: 50 });
++            setMessages(history.items as MessageItem[]);
++          }
 +        }
 +      } catch (error) {
 +        console.error('Invalid QR payload', error);

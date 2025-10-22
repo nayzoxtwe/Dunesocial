@@ -12,6 +12,7 @@ import { appRouter } from './router.js';
 import { createContext } from './context.js';
 import { prisma } from './prisma.js';
 import { broadcast, emitToConversation, emitToUser, registerSocket } from './socket.js';
+import { broadcastPresence } from './utils/presence.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -88,8 +89,19 @@ io.on('connection', async (socket) => {
     socket.join(`conversation:${membership.convId}`);
   });
 
+  await broadcastPresence(prisma, userId, 'online');
+
   socket.on('typing', (payload: { conversationId: string }) => {
     emitToConversation(payload.conversationId, 'typing', { userId });
+  });
+
+  socket.on('joinConversation', async (payload: { conversationId: string }) => {
+    const membership = await prisma.member.findFirst({
+      where: { convId: payload.conversationId, userId }
+    });
+    if (membership) {
+      socket.join(`conversation:${payload.conversationId}`);
+    }
   });
 
   socket.on('sendMessage', async (payload: { conversationId: string; text?: string; kind?: string }) => {
@@ -131,7 +143,7 @@ io.on('connection', async (socket) => {
         lastActiveAt: new Date()
       }
     });
-    emitToUser(userId, 'presence:update', { userId, status: payload.status });
+    await broadcastPresence(prisma, userId, payload.status);
   });
 
   socket.on('disconnect', async () => {
@@ -145,6 +157,7 @@ io.on('connection', async (socket) => {
         lastActiveAt: new Date()
       }
     });
+    await broadcastPresence(prisma, userId, 'offline');
   });
 });
 
@@ -157,7 +170,32 @@ cron.schedule('*/10 * * * *', async () => {
   }
 });
 
-const port = Number(process.env.PORT ?? 4000);
-httpServer.listen(port, () => {
-  console.log(`API ready on http://localhost:${port}`);
+async function start() {
+  try {
+    await prisma.$connect();
+    console.log('Connected to database');
+  } catch (error) {
+    console.error('Failed to connect to database', error);
+    process.exit(1);
+  }
+
+  const port = Number(process.env.PORT ?? 4000);
+  httpServer.listen(port, () => {
+    console.log(`API ready on http://localhost:${port}`);
+  });
+}
+
+start().catch((error) => {
+  console.error('Failed to start server', error);
+  process.exit(1);
 });
+
+async function shutdown() {
+  await prisma.$disconnect();
+  httpServer.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

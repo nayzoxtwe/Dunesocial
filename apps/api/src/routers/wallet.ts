@@ -95,6 +95,17 @@ export const walletRouter = router({
       emitToUser(ctx.user.id, 'wallet:update', { balance: updatedSender.coins });
       emitToUser(input.toId, 'wallet:update', { balance: updatedRecipient.coins });
 
+      emitToUser(ctx.user.id, 'wallet:transfer', {
+        balance: updatedSender.coins,
+        transfer,
+        direction: 'outgoing'
+      });
+      emitToUser(input.toId, 'wallet:transfer', {
+        balance: updatedRecipient.coins,
+        transfer,
+        direction: 'incoming'
+      });
+
       return {
         balance: updatedSender.coins,
         recipientBalance: updatedRecipient.coins,
