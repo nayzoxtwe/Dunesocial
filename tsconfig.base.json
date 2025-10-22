@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@proto/*": ["packages/proto/src/*"],
+      "@ui/*": ["packages/ui/src/*"],
+      "@app/api/*": ["apps/api/src/*"]
+    }
+  }
+}

@@ -1,0 +1,3154 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000000000000000000000000000000000000..14c105fe91e760cb331b5d1ba366bee4f1beb866
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,8 @@
++# Shared
++DATABASE_URL=postgres://user:pass@localhost:5432/dune
++JWT_SECRET=change-me-super-secret
++NEXTAUTH_SECRET=change-me-super-secret
++NEXTAUTH_URL=http://localhost:3000
++MAGIC_EMAIL_FROM=no-reply@dune.local
++NEXT_PUBLIC_API_URL=http://localhost:4000
++CORS_ORIGIN=http://localhost:3000
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..0441353bee256e22fc2e6ea90187ef74c5c744b3
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,21 @@
++name: CI
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: pnpm/action-setup@v2
++        with:
++          version: 8.14.1
++      - uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++          cache: 'pnpm'
++      - run: pnpm install --frozen-lockfile false
++      - run: pnpm test
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..3cc4c9dfb40546771ffce5c4b8854d92e36d0b69
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++node_modules
++pnpm-lock.yaml
++.env
++apps/**/dist
++apps/**/.next
++apps/**/node_modules
+diff --git a/API_CONTRACT.md b/API_CONTRACT.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..807abb89e217e3a6de5645921c397353807c7919
+--- /dev/null
++++ b/API_CONTRACT.md
+@@ -0,0 +1,34 @@
++# API Contract (tRPC)
++
++All procedures live under `/trpc` and require a Bearer JWT unless noted.
++
++## auth
++- `auth.loginMagic(email)` – generates a NextAuth-compatible verification token, logging the magic link URL.
++
++## user
++- `user.me()` – returns user profile, wallet snapshot, and accepted friends.
++- `user.updateProfile({ display, bio?, status?, nightStart?, nightEnd? })`
++
++## friends
++- `friends.issueQR()` – returns `{ qrPng, payload, signature, expiresAt }` for sharing.
++- `friends.acceptQR({ payload, signature })` – verifies HMAC + expiry, creates friend link + DM.
++
++## chat
++- `chat.list()` – conversations with participant + last message metadata.
++- `chat.history({ conversationId, cursor?, limit })` – paginated message history.
++- `chat.send({ conversationId, kind?, text?, mediaUrl? })`
++- `chat.createDM({ userId })`
++
++## story
++- `story.post({ dataUrl })` – stores base64 image/gif and schedules expiry.
++- `story.feed()` – active stories for self + friends.
++
++## wallet
++- `wallet.get()` – balance and recent transfers.
++- `wallet.transfer({ toId, coins, memo? })` – enforces teen cap and balance checks.
++
++## parent
++- `parent.setNightWindow({ childId, start, end })` – parent-only mutation adjusting teen blackout window.
++
++## presence
++- `presence.set({ status })` – updates profile status and emits realtime update.
+diff --git a/COINS_ECONOMY.md b/COINS_ECONOMY.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e305ee3170f6d2d9ef8e7a8430e8d9a67229734
+--- /dev/null
++++ b/COINS_ECONOMY.md
+@@ -0,0 +1,9 @@
++# Coins Economy
++
++- Conversion: **1€ = 100 coins**. Client display rounds to nearest 10 coins using `coinPackEuroToCoins` helper.
++- Seed balances: Moi (900), Nova (650), Eden (400).
++- Transfers: tRPC `wallet.transfer` enforces positive integers, balance sufficiency, and teen monthly cap (1000 coins sent since start of month).
++- Wallet updates broadcast via Socket.IO `wallet:update` to sender + recipient for realtime balance refresh.
++- History: `wallet.get` returns last 20 transfers involving the user.
++- Marketplace: Placeholder; extend `wallet.transfer` for sticker purchases and add `stickers` table.
++- Taxes / FX: Not yet implemented; future iteration will use daily FX feed and rounding to 10-coin buckets.
+diff --git a/PARENTAL_CONTROLS.md b/PARENTAL_CONTROLS.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..8755e1356e5bc0470126e0bb975daa28967a8c03
+--- /dev/null
++++ b/PARENTAL_CONTROLS.md
+@@ -0,0 +1,8 @@
++# Parental Controls
++
++- **Roles** – Users can be `ADULT`, `TEEN`, or `PARENT`. Seed data links `moi@dune.local` as parent of `eden@dune.local`.
++- **Night Mode** – Teen profiles store `nightStart`/`nightEnd` minutes from midnight. UI checks via `applyTeenNightMode` to disable chat input + story upload within blackout window (default 23:00–05:00).
++- **API** – `parent.setNightWindow` (tRPC) allows parent accounts to adjust the child's night window. Stored in `ParentalLink` and mirrored to `Profile`.
++- **UI Banner** – Teens see a persistent banner when blackout is active, including reminder that parent override is required.
++- **Teen Coin Cap** – Transfers enforce `ParentalLink.teenCoinCap` (default 1000 coins/month) and reject attempts exceeding allowance.
++- **Next Steps** – Add parent dashboard surface (approve overrides, temporary unlock), content filters, and notification summaries.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c74224c1c6651a63ad1b9f3103a8f2835b22e01
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,69 @@
++# Dune Messenger
++
++Prototype social messenger inspired by LINE with dark theme chat, QR friend onboarding, realtime messaging, and parental controls. The monorepo uses pnpm with a Next.js 14 frontend and an Express+tRPC API backed by PostgreSQL/Prisma.
++
++## Stack Overview
++
++- **apps/web** – Next.js 14 (App Router) client with NextAuth magic-link auth, tRPC client, Socket.IO presence, stories uploader, wallet UI, and QR scanner.
++- **apps/api** – Express server exposing tRPC routers, Socket.IO realtime gateway, Prisma ORM, media upload handling, and cron cleanup for stories.
++- **packages/ui** – Shared chat surfaces (message bubbles, story bar, bottom navigation) with Tailwind-compliant styling.
++- **packages/proto** – Shared helpers (teen night-mode utility, Signal-style safety number) plus exported `AppRouter` types for tRPC clients.
++
++## Prerequisites
++
++- Node.js 18+
++- pnpm 8+
++- PostgreSQL 14+ running locally (configure `DATABASE_URL`)
++
++## Setup
++
++```bash
++pnpm install
++cp .env.example .env
++pnpm db:push
++pnpm db:seed
++```
++
++Start the services in separate terminals:
++
++```bash
++pnpm dev:api   # Express+tRPC API on http://localhost:4000
++pnpm dev:web   # Next.js app on http://localhost:3000
++```
++
++Seed accounts (`moi@dune.local`, `nova@dune.local`, `eden@dune.local`) have preloaded wallets, DM history, and parental links.
++
++## Auth Flow
++
++1. Visit `http://localhost:3000` and request a magic link with one of the seed emails.
++2. Copy the link printed in the Next.js server logs and open it in the browser to finish login.
++3. The UI will connect to the API via tRPC and Socket.IO using the issued session token.
++
++## Feature Highlights
++
++- 1:1 chats with realtime updates, typing indicators, and presence badges.
++- QR friend invites signed server-side; Scan tab uses camera stream to accept payloads and auto-create secure DMs.
++- Stories uploader (24h expiry with cron purge) backed by local `/uploads/stories` storage.
++- Wallet transfers with teen monthly caps and live balance refresh.
++- Teen night mode banner/enforcement (23:00–05:00 default) with parental override API.
++
++## Testing & Tooling
++
++- `pnpm test` – runs Node test stubs (expand with Vitest/Jest later).
++- `pnpm lint` – placeholder lint script.
++- GitHub Actions CI (`.github/workflows/ci.yml`) installs, lints, tests.
++
++## Useful Scripts
++
++- `pnpm dev:api` – start API with ts-node-dev and Socket.IO hot reload.
++- `pnpm dev:web` – Next.js dev server with hot reload and NextAuth routes.
++- `pnpm db:push` – apply Prisma schema to database.
++- `pnpm db:seed` – seed demo data.
++
++## Media Storage
++
++Stories and uploaded assets store under `./uploads/stories`. Ensure the directory is writable. For production, replace with S3-compatible storage and update the API adapter.
++
++## Environment Variables
++
++See `.env.example` for required configuration (database, JWT secrets, API origin, etc.).
+diff --git a/SECURITY.md b/SECURITY.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf5160d6812a67c25ded0a97788f4fb2fb51f96f
+--- /dev/null
++++ b/SECURITY.md
+@@ -0,0 +1,12 @@
++# Security Notes
++
++- **Authentication** – NextAuth email magic-links with Prisma adapter; sessions issue short-lived JWTs (1h) for API access.
++- **Authorization** – tRPC procedures enforce `authenticatedProcedure`; parent actions gated by role checks.
++- **Transport** – Socket.IO + HTTP share the same JWT for identity. (Enable HTTPS/secure cookies in production.)
++- **QR Signatures** – Friend QR payloads are signed with HMAC-SHA256 (`QR_SECRET`/`JWT_SECRET`); accept flow validates signature + expiry.
++- **Presence** – Socket handshakes validate JWT and upsert profile status to mitigate spoofing.
++- **Coins Transfers** – Transactions enforce balance checks and teen monthly caps; wallet updates emitted only after Prisma commit.
++- **Night Mode** – Teen accounts have enforced blackout windows stored in DB, surfaced to UI for read-only restrictions.
++- **Media Storage** – Stories saved to local filesystem; TODO: integrate AV scanning + presigned uploads for production.
++- **Secrets** – `.env` houses `JWT_SECRET`, `NEXTAUTH_SECRET`, etc. Rotate for production deployments.
++- **Ratelimiting / Abuse** – Not yet implemented; roadmap includes IP/user scoped Redis counters and abuse heuristics.
+diff --git a/STYLEGUIDE.md b/STYLEGUIDE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ffbadf36a051c199e1796f6ee3bd2649bce732d
+--- /dev/null
++++ b/STYLEGUIDE.md
+@@ -0,0 +1,9 @@
++# Frontend Styleguide
++
++- **Theme** – Global dark surface `#0B0B0F`, neutral typography, gradient accent (`#b26cff → #7c3aed`).
++- **Chat Bubbles** – Self messages use gradient + white text with soft purple shadow; others use `#15151B` + subtle border per Tailwind utilities in `@dune/ui`.
++- **Navigation** – Bottom tab bar remains fixed with blur + border, icons from Lucide, interactive via `onSelect` callback.
++- **Stories** – Rounded rings, gradient highlights for unseen, shrink to fit horizontally scrollable strip.
++- **Forms** – Rounded-2xl inputs, focus-visible outlines in accent color.
++- **Accessibility** – High-contrast text, semantic buttons for icon tabs, descriptive alt text for media.
++- **Night Mode Banner** – Purple gradient alert for teen blackout hours; ensure text contrast and sticky positioning.
+diff --git a/SYSTEM_DESIGN.md b/SYSTEM_DESIGN.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..f59bc1513a134f14218099a24c290f9ba3c0db1a
+--- /dev/null
++++ b/SYSTEM_DESIGN.md
+@@ -0,0 +1,47 @@
++# System Design
++
++## Monorepo
++- pnpm + Turborepo workspace with `apps/web`, `apps/api`, `packages/ui`, `packages/proto`.
++- Shared TypeScript config and lint/test workflows.
++
++## API (`apps/api`)
++- Express HTTP server exposing a `/trpc` endpoint backed by tRPC router modules (`auth`, `user`, `friends`, `chat`, `story`, `wallet`, `parent`, `presence`).
++- Socket.IO gateway on the same port for realtime delivery (message fanout, presence, typing, wallet updates, story notifications).
++- Prisma ORM targeting PostgreSQL using the schema in `apps/api/prisma/schema.prisma`.
++- Cron job (node-cron) purges expired stories every 10 minutes and notifies clients.
++- Media uploads handled via base64 payloads written to `/uploads/stories` (S3 adapter TODO).
++
++## Web (`apps/web`)
++- Next.js 14 App Router application with NextAuth email magic-links, Prisma adapter, and session->JWT bridging to the API.
++- Client-side tRPC proxy (`createTrpcClient`) plus Socket.IO client for realtime message/presence syncing.
++- React Query and Zustand-like local state (hooks) orchestrate chat lists, wallets, stories, and QR flows.
++- Stories upload uses the File API → base64 → tRPC mutation pattern.
++- QR scanner uses `react-qr-reader` to decode payloads and call `friends.acceptQR`.
++
++## Data Flow
++1. User authenticates via magic link; NextAuth session callback mints an API JWT stored in `session.apiToken`.
++2. Client bootstraps `user.me`, `chat.list`, `story.feed`, `wallet.get` via tRPC.
++3. Socket.IO connection joins user + conversation rooms; server updates presence states.
++4. Messages posted through tRPC persist via Prisma and broadcast to conversation rooms.
++5. Wallet transfers run in a transaction, enforce teen caps, and emit wallet:update events to both participants.
++6. QR issue/accept uses HMAC signatures stored in `QRInvite`; accept path validates signature + expiry before creating DM + friend link.
++
++## Persistence Schema Highlights
++- `User` stores role (ADULT/TEEN/PARENT) and NextAuth adapter relations.
++- `Profile` tracks display name, status, night mode window, and last activity timestamp.
++- `Conversation` has `dmKey` for unique DM pair lookups; `Message` stores plaintext (E2EE placeholder) plus metadata.
++- `Wallet` & `Transfer` capture balances + history; `ParentalLink` stores child/parent relationships and teen caps.
++- `QRInvite` stores signed payloads for QR onboarding; `Story` tracks media URL + expiry.
++
++## Realtime Contracts
++- `message:new` – broadcast when tRPC/socket message created.
++- `typing` – ephemeral typing notifications per conversation.
++- `presence:update` – user status transitions (online/offline/busy).
++- `story:new` / `story:expired` – feed changes.
++- `wallet:update` – immediate wallet balance refresh after transfers.
++
++## Future Work
++- Replace base64 uploads with multipart S3 adapter + AV scanning.
++- Integrate libsignal for actual E2EE payloads + device key verification.
++- Add Redis-backed ratelimiting and presence heartbeats.
++- Expand tests (unit, e2e, load) and productionize deployment (Fly/Vercel).
+diff --git a/apps/api/package.json b/apps/api/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..bda72536cbe66de4985d2293112cf8a171c30751
+--- /dev/null
++++ b/apps/api/package.json
+@@ -0,0 +1,40 @@
++{
++  "name": "@app/api",
++  "private": true,
++  "type": "module",
++  "scripts": {
++    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
++    "build": "tsc -p tsconfig.json",
++    "start": "node dist/server.js",
++    "prisma:generate": "prisma generate",
++    "prisma:migrate": "prisma migrate dev"
++  },
++  "dependencies": {
++    "@prisma/client": "5.8.0",
++    "@trpc/server": "10.45.0",
++    "cookie-parser": "1.4.6",
++    "cors": "2.8.5",
++    "express": "4.18.2",
++    "date-fns": "2.30.0",
++    "jsonwebtoken": "9.0.2",
++    "multer": "1.4.5-lts.1",
++    "node-cron": "3.0.2",
++    "qrcode": "1.5.3",
++    "socket.io": "4.7.4",
++    "superjson": "1.13.3",
++    "zod": "3.22.4"
++  },
++  "devDependencies": {
++    "@types/cookie-parser": "1.4.5",
++    "@types/express": "4.17.21",
++    "@types/jsonwebtoken": "9.0.5",
++    "@types/node": "20.10.5",
++    "@types/node-cron": "3.0.8",
++    "@types/qrcode": "1.5.5",
++    "@types/socket.io": "3.0.2",
++    "@types/multer": "1.4.11",
++    "prisma": "5.8.0",
++    "ts-node-dev": "2.0.0",
++    "typescript": "5.3.3"
++  }
++}
+diff --git a/apps/api/prisma/schema.prisma b/apps/api/prisma/schema.prisma
+new file mode 100644
+index 0000000000000000000000000000000000000000..c366dc5066aa2528b1505fc6811622d4aac1332e
+--- /dev/null
++++ b/apps/api/prisma/schema.prisma
+@@ -0,0 +1,200 @@
++generator client {
++  provider = "prisma-client-js"
++}
++
++datasource db {
++  provider = "postgresql"
++  url      = env("DATABASE_URL")
++}
++
++enum Role {
++  ADULT
++  TEEN
++  PARENT
++}
++
++model User {
++  id        String   @id @default(cuid())
++  email     String   @unique
++  name      String?
++  emailVerified DateTime?
++  role      Role     @default(ADULT)
++  createdAt DateTime @default(now())
++  profile   Profile?
++  wallet    Wallet?
++  devices   Device[]
++  friendsA  Friend[] @relation("A")
++  friendsB  Friend[] @relation("B")
++  members   Member[]
++  stories   Story[]
++  transfers Transfer[] @relation("TransferFrom")
++  receipts  Transfer[] @relation("TransferTo")
++  qrInvites QRInvite[]
++  parentLinksChild  ParentalLink[] @relation("Child")
++  parentLinksParent ParentalLink[] @relation("Parent")
++  settings  Settings?
++  accounts  Account[]
++  sessions  Session[]
++}
++
++model Profile {
++  userId       String @id
++  display      String
++  avatar       String?
++  banner       String?
++  bio          String?
++  status       String   @default("offline")
++  nightStart   Int?
++  nightEnd     Int?
++  lastActiveAt DateTime?
++  user         User    @relation(fields: [userId], references: [id])
++}
++
++model Device {
++  id        String @id @default(cuid())
++  userId    String @unique
++  pubKey    String
++  pushToken String?
++  user      User   @relation(fields: [userId], references: [id])
++}
++
++model Friend {
++  id        String   @id @default(cuid())
++  aId       String
++  bId       String
++  state     String   @default("PENDING")
++  createdAt DateTime @default(now())
++  A         User     @relation("A", fields: [aId], references: [id])
++  B         User     @relation("B", fields: [bId], references: [id])
++
++  @@unique([aId, bId])
++}
++
++model Conversation {
++  id        String   @id @default(cuid())
++  type      String   @default("DM")
++  createdBy String
++  createdAt DateTime @default(now())
++  updatedAt DateTime @updatedAt
++  dmKey     String?  @unique
++  members   Member[]
++  messages  Message[]
++}
++
++model Member {
++  id        String   @id @default(cuid())
++  convId    String
++  userId    String
++  role      String   @default("member")
++  joinedAt  DateTime @default(now())
++  conversation Conversation @relation(fields: [convId], references: [id])
++  user       User       @relation(fields: [userId], references: [id])
++
++  @@unique([convId, userId])
++}
++
++model Message {
++  id        String   @id @default(cuid())
++  convId    String
++  senderId  String
++  kind      String   @default("text")
++  text      String?
++  mediaUrl  String?
++  createdAt DateTime @default(now())
++  readBy    String[] @default([])
++  conversation Conversation @relation(fields: [convId], references: [id])
++  sender    User     @relation(fields: [senderId], references: [id])
++}
++
++model Story {
++  id        String   @id @default(cuid())
++  userId    String
++  mediaUrl  String
++  createdAt DateTime @default(now())
++  expiresAt DateTime
++  viewers   String[] @default([])
++  user      User     @relation(fields: [userId], references: [id])
++}
++
++model Wallet {
++  userId String @id
++  coins  Int    @default(0)
++  user   User   @relation(fields: [userId], references: [id])
++}
++
++model Transfer {
++  id        String   @id @default(cuid())
++  fromId    String
++  toId      String
++  coins     Int
++  memo      String?
++  createdAt DateTime @default(now())
++  from      User     @relation("TransferFrom", fields: [fromId], references: [id])
++  to        User     @relation("TransferTo", fields: [toId], references: [id])
++}
++
++model QRInvite {
++  id        String   @id @default(cuid())
++  ownerId   String
++  payload   String
++  signature String
++  createdAt DateTime @default(now())
++  expiresAt DateTime
++  owner     User     @relation(fields: [ownerId], references: [id])
++}
++
++model ParentalLink {
++  id          String @id @default(cuid())
++  childId     String
++  parentId    String
++  nightStart  Int    @default(1380)
++  nightEnd    Int    @default(300)
++  teenCoinCap Int    @default(1000)
++  child       User   @relation("Child", fields: [childId], references: [id])
++  parent      User   @relation("Parent", fields: [parentId], references: [id])
++
++  @@unique([childId, parentId])
++}
++
++model Settings {
++  userId           String @id
++  theme            String @default("dark")
++  bubbleShape      String @default("pill")
++  accentColor      String @default("#a855f7")
++  optimizationMode String @default("balanced")
++  user             User   @relation(fields: [userId], references: [id])
++}
++
++model Account {
++  id                 String  @id @default(cuid())
++  userId             String
++  type               String
++  provider           String
++  providerAccountId  String
++  refresh_token      String?
++  access_token       String?
++  expires_at         Int?
++  token_type         String?
++  scope              String?
++  id_token           String?
++  session_state      String?
++  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
++
++  @@unique([provider, providerAccountId])
++}
++
++model Session {
++  id           String   @id @default(cuid())
++  sessionToken String   @unique
++  userId       String
++  expires      DateTime
++  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
++}
++
++model VerificationToken {
++  identifier String
++  token      String   @unique
++  expires    DateTime
++
++  @@unique([identifier, token])
++}
+diff --git a/apps/api/prisma/seed.ts b/apps/api/prisma/seed.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..54cb3e15c5c6264773e78b4298d5709b2067d23b
+--- /dev/null
++++ b/apps/api/prisma/seed.ts
+@@ -0,0 +1,134 @@
++import { PrismaClient, Role } from '@prisma/client';
++
++const prisma = new PrismaClient();
++
++async function main() {
++  await prisma.$transaction([
++    prisma.message.deleteMany(),
++    prisma.member.deleteMany(),
++    prisma.conversation.deleteMany(),
++    prisma.friend.deleteMany(),
++    prisma.story.deleteMany(),
++    prisma.wallet.deleteMany(),
++    prisma.profile.deleteMany(),
++    prisma.user.deleteMany()
++  ]);
++
++  const users = await Promise.all([
++    prisma.user.create({
++      data: {
++        email: 'moi@dune.local',
++        role: Role.ADULT,
++        profile: {
++          create: {
++            display: 'Moi',
++            status: 'online',
++            nightStart: 1380,
++            nightEnd: 300
++          }
++        },
++        wallet: { create: { coins: 900 } }
++      },
++      include: { profile: true, wallet: true }
++    }),
++    prisma.user.create({
++      data: {
++        email: 'nova@dune.local',
++        role: Role.ADULT,
++        profile: {
++          create: {
++            display: 'Nova',
++            status: 'online'
++          }
++        },
++        wallet: { create: { coins: 650 } }
++      },
++      include: { profile: true, wallet: true }
++    }),
++    prisma.user.create({
++      data: {
++        email: 'eden@dune.local',
++        role: Role.TEEN,
++        profile: {
++          create: {
++            display: 'Eden',
++            status: 'offline',
++            nightStart: 1380,
++            nightEnd: 300
++          }
++        },
++        wallet: { create: { coins: 400 } }
++      },
++      include: { profile: true, wallet: true }
++    })
++  ]);
++
++  const [moi, nova, eden] = users;
++
++  await prisma.friend.create({
++    data: {
++      aId: moi.id < nova.id ? moi.id : nova.id,
++      bId: moi.id < nova.id ? nova.id : moi.id,
++      state: 'ACCEPTED'
++    }
++  });
++
++  const conversation = await prisma.conversation.create({
++    data: {
++      type: 'DM',
++      createdBy: moi.id,
++      dmKey: [moi.id, nova.id].sort().join(':'),
++      members: {
++        create: [
++          { userId: moi.id },
++          { userId: nova.id }
++        ]
++      },
++      messages: {
++        create: [
++          {
++            senderId: moi.id,
++            kind: 'text',
++            text: 'Bienvenue sur Dune Messenger!'
++          },
++          {
++            senderId: nova.id,
++            kind: 'text',
++            text: 'On se retrouve dans le salon violet.'
++          }
++        ]
++      }
++    }
++  });
++
++  await prisma.transfer.create({
++    data: {
++      fromId: moi.id,
++      toId: nova.id,
++      coins: 80,
++      memo: 'Pour les stickers premium'
++    }
++  });
++
++  await prisma.parentalLink.create({
++    data: {
++      childId: eden.id,
++      parentId: moi.id,
++      nightStart: 1380,
++      nightEnd: 300,
++      teenCoinCap: 1000
++    }
++  });
++
++  console.log('Seeded users:', users.map((user) => `${user.profile?.display} <${user.email}>`).join(', '));
++  console.log('Conversation created with id:', conversation.id);
++}
++
++main()
++  .catch((error) => {
++    console.error(error);
++    process.exit(1);
++  })
++  .finally(async () => {
++    await prisma.$disconnect();
++  });
+diff --git a/apps/api/src/context.ts b/apps/api/src/context.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2579e8e1498a4080c4cad56239b992e17ad9aef
+--- /dev/null
++++ b/apps/api/src/context.ts
+@@ -0,0 +1,51 @@
++import type { inferAsyncReturnType } from '@trpc/server';
++import type { CreateExpressContextOptions } from '@trpc/server/adapters/express';
++import jwt from 'jsonwebtoken';
++import { prisma } from './prisma.js';
++
++export type AuthClaims = {
++  sub: string;
++  role?: string;
++  email?: string;
++};
++
++export async function createContext({ req }: CreateExpressContextOptions) {
++  const header = req.headers.authorization;
++  let userId: string | null = null;
++  let role: string | null = null;
++
++  if (header?.startsWith('Bearer ')) {
++    const token = header.split(' ')[1];
++    try {
++      const secret = process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
++      if (!secret) {
++        throw new Error('JWT secret missing');
++      }
++      const decoded = jwt.verify(token, secret) as AuthClaims;
++      if (decoded.sub) {
++        userId = decoded.sub;
++        role = decoded.role ?? null;
++      }
++    } catch (err) {
++      console.warn('Invalid auth token', err);
++    }
++  }
++
++  const user = userId
++    ? await prisma.user.findUnique({
++        where: { id: userId },
++        include: {
++          profile: true,
++          wallet: true
++        }
++      })
++    : null;
++
++  return {
++    prisma,
++    user,
++    role: role ?? user?.role ?? null
++  };
++}
++
++export type AppContext = inferAsyncReturnType<typeof createContext>;
+diff --git a/apps/api/src/prisma.ts b/apps/api/src/prisma.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4674de56404d221ab43699ed48bb71603a12076
+--- /dev/null
++++ b/apps/api/src/prisma.ts
+@@ -0,0 +1,13 @@
++import { PrismaClient } from '@prisma/client';
++
++const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
++
++export const prisma =
++  globalForPrisma.prisma ??
++  new PrismaClient({
++    log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error']
++  });
++
++if (process.env.NODE_ENV !== 'production') {
++  globalForPrisma.prisma = prisma;
++}
+diff --git a/apps/api/src/router.ts b/apps/api/src/router.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7708122a7093620564249e6385459834ae79c475
+--- /dev/null
++++ b/apps/api/src/router.ts
+@@ -0,0 +1,22 @@
++import { router } from './trpc.js';
++import { authRouter } from './routers/auth.js';
++import { chatRouter } from './routers/chat.js';
++import { friendsRouter } from './routers/friends.js';
++import { parentRouter } from './routers/parent.js';
++import { presenceRouter } from './routers/presence.js';
++import { storyRouter } from './routers/story.js';
++import { userRouter } from './routers/user.js';
++import { walletRouter } from './routers/wallet.js';
++
++export const appRouter = router({
++  auth: authRouter,
++  user: userRouter,
++  friends: friendsRouter,
++  chat: chatRouter,
++  story: storyRouter,
++  wallet: walletRouter,
++  parent: parentRouter,
++  presence: presenceRouter
++});
++
++export type AppRouter = typeof appRouter;
+diff --git a/apps/api/src/routers/auth.ts b/apps/api/src/routers/auth.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e4ea06bf7c4de2945cc31cf067e105fe8d5cc5f7
+--- /dev/null
++++ b/apps/api/src/routers/auth.ts
+@@ -0,0 +1,63 @@
++import { randomUUID } from 'node:crypto';
++import { addMinutes } from 'date-fns';
++import { z } from 'zod';
++import { router, procedure } from '../trpc.js';
++
++export const authRouter = router({
++  loginMagic: procedure
++    .input(
++      z.object({
++        email: z.string().email(),
++        locale: z.string().optional()
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      const email = input.email.toLowerCase();
++      const expires = addMinutes(new Date(), 15);
++      const token = randomUUID();
++
++      const user = await ctx.prisma.user.upsert({
++        where: { email },
++        update: {},
++        create: {
++          email,
++          role: 'ADULT'
++        }
++      });
++
++      await ctx.prisma.profile.upsert({
++        where: { userId: user.id },
++        update: {},
++        create: {
++          userId: user.id,
++          display: email.split('@')[0],
++          status: 'offline'
++        }
++      });
++
++      await ctx.prisma.wallet.upsert({
++        where: { userId: user.id },
++        update: {},
++        create: { userId: user.id, coins: 500 }
++      });
++
++      await ctx.prisma.verificationToken.create({
++        data: {
++          identifier: email,
++          token,
++          expires
++        }
++      });
++
++      const baseUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
++      const url = `${baseUrl}/api/auth/callback/email?token=${token}&email=${encodeURIComponent(email)}`;
++
++      console.info(`Magic link for ${email}: ${url}`);
++
++      return {
++        ok: true,
++        expires,
++        message: 'Magic link generated. Check server logs to continue login.'
++      };
++    })
++});
+diff --git a/apps/api/src/routers/chat.ts b/apps/api/src/routers/chat.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8cd238c973f56e68ae286484ec58fadf17a949b
+--- /dev/null
++++ b/apps/api/src/routers/chat.ts
+@@ -0,0 +1,195 @@
++import { z } from 'zod';
++import { emitToConversation } from '../socket.js';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const messageKinds = ['text', 'image', 'gif', 'sticker', 'voice'] as const;
++
++export const chatRouter = router({
++  createDM: authenticatedProcedure
++    .input(z.object({ userId: z.string() }))
++    .mutation(async ({ ctx, input }) => {
++      const otherUser = await ctx.prisma.user.findUnique({ where: { id: input.userId }, include: { profile: true } });
++      if (!otherUser) {
++        throw new Error('User not found');
++      }
++
++      const [aId, bId] = [ctx.user.id, otherUser.id].sort();
++      const dmKey = `${aId}:${bId}`;
++
++      await ctx.prisma.friend.upsert({
++        where: { aId_bId: { aId, bId } },
++        update: { state: 'ACCEPTED' },
++        create: { aId, bId, state: 'ACCEPTED' }
++      });
++
++      const conversation = await ctx.prisma.conversation.upsert({
++        where: { dmKey },
++        update: {},
++        create: {
++          type: 'DM',
++          createdBy: ctx.user.id,
++          dmKey,
++          members: {
++            createMany: {
++              data: [
++                { userId: ctx.user.id, role: 'member' },
++                { userId: otherUser.id, role: 'member' }
++              ]
++            }
++          }
++        }
++      });
++
++      return { id: conversation.id };
++    }),
++  list: authenticatedProcedure.query(async ({ ctx }) => {
++    const conversations = await ctx.prisma.conversation.findMany({
++      where: {
++        members: {
++          some: { userId: ctx.user.id }
++        }
++      },
++      include: {
++        members: {
++          include: {
++            user: {
++              include: { profile: true }
++            }
++          }
++        },
++        messages: {
++          orderBy: { createdAt: 'desc' },
++          take: 1,
++          include: {
++            sender: {
++              include: { profile: true }
++            }
++          }
++        }
++      },
++      orderBy: { updatedAt: 'desc' }
++    });
++
++    return conversations.map((conversation) => {
++      const lastMessage = conversation.messages[0];
++      const otherMember = conversation.members.find((member) => member.userId !== ctx.user.id);
++      return {
++        id: conversation.id,
++        type: conversation.type,
++        lastMessage: lastMessage
++          ? {
++              id: lastMessage.id,
++              text: lastMessage.text,
++              createdAt: lastMessage.createdAt,
++              sender: {
++                id: lastMessage.sender.id,
++                display: lastMessage.sender.profile?.display ?? lastMessage.sender.email
++              }
++            }
++          : null,
++        participant: otherMember
++          ? {
++              id: otherMember.user.id,
++              display: otherMember.user.profile?.display ?? otherMember.user.email,
++              status: otherMember.user.profile?.status ?? 'offline'
++            }
++          : null
++      };
++    });
++  }),
++  history: authenticatedProcedure
++    .input(
++      z.object({
++        conversationId: z.string(),
++        cursor: z.string().nullish(),
++        limit: z.number().min(1).max(50).default(20)
++      })
++    )
++    .query(async ({ ctx, input }) => {
++      const messages = await ctx.prisma.message.findMany({
++        where: { convId: input.conversationId },
++        take: input.limit,
++        skip: input.cursor ? 1 : 0,
++        cursor: input.cursor ? { id: input.cursor } : undefined,
++        orderBy: { createdAt: 'desc' },
++        include: {
++          sender: {
++            include: { profile: true }
++          }
++        }
++      });
++
++      const nextCursor = messages.length === input.limit ? messages[messages.length - 1]?.id : undefined;
++
++      return {
++        items: messages.reverse().map((message) => ({
++          id: message.id,
++          createdAt: message.createdAt,
++          kind: message.kind,
++          text: message.text,
++          mediaUrl: message.mediaUrl,
++          sender: {
++            id: message.sender.id,
++            display: message.sender.profile?.display ?? message.sender.email
++          }
++        })),
++        nextCursor
++      };
++    }),
++  send: authenticatedProcedure
++    .input(
++      z.object({
++        conversationId: z.string(),
++        kind: z.enum(messageKinds).default('text'),
++        text: z.string().max(4000).optional(),
++        mediaUrl: z.string().url().optional()
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      const member = await ctx.prisma.member.findFirst({
++        where: {
++          convId: input.conversationId,
++          userId: ctx.user.id
++        }
++      });
++
++      if (!member) {
++        throw new Error('Not a conversation member');
++      }
++
++      const message = await ctx.prisma.message.create({
++        data: {
++          convId: input.conversationId,
++          senderId: ctx.user.id,
++          kind: input.kind,
++          text: input.text,
++          mediaUrl: input.mediaUrl
++        },
++        include: {
++          sender: {
++            include: { profile: true }
++          }
++        }
++      });
++
++      await ctx.prisma.conversation.update({
++        where: { id: input.conversationId },
++        data: { updatedAt: new Date() }
++      });
++
++      emitToConversation(input.conversationId, 'message:new', {
++        id: message.id,
++        conversationId: input.conversationId,
++        kind: message.kind,
++        text: message.text,
++        mediaUrl: message.mediaUrl,
++        createdAt: message.createdAt,
++        sender: {
++          id: message.sender.id,
++          display: message.sender.profile?.display ?? message.sender.email
++        }
++      });
++
++      return { id: message.id };
++    })
++});
+diff --git a/apps/api/src/routers/friends.ts b/apps/api/src/routers/friends.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d38bb9fca483383d6d7b937d920d0bcf2c5124f7
+--- /dev/null
++++ b/apps/api/src/routers/friends.ts
+@@ -0,0 +1,131 @@
++import { createHmac, randomUUID } from 'node:crypto';
++import QRCode from 'qrcode';
++import { addMinutes } from 'date-fns';
++import { z } from 'zod';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const secret = () => {
++  const value = process.env.QR_SECRET ?? process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
++  if (!value) {
++    throw new Error('QR secret missing');
++  }
++  return value;
++};
++
++export const friendsRouter = router({
++  issueQR: authenticatedProcedure.mutation(async ({ ctx }) => {
++    const profile = ctx.user.profile ??
++      (await ctx.prisma.profile.upsert({
++        where: { userId: ctx.user.id },
++        update: {},
++        create: {
++          userId: ctx.user.id,
++          display: ctx.user.email.split('@')[0],
++          status: 'online'
++        }
++      }));
++
++    const device = await ctx.prisma.device.upsert({
++      where: { userId: ctx.user.id },
++      update: { pubKey: randomUUID() },
++      create: {
++        userId: ctx.user.id,
++        pubKey: randomUUID()
++      }
++    });
++
++    const payload = {
++      uid: ctx.user.id,
++      display: profile.display,
++      pubKey: device.pubKey,
++      ts: new Date().toISOString()
++    };
++
++    const payloadString = JSON.stringify(payload);
++    const signature = createHmac('sha256', secret()).update(payloadString).digest('hex');
++
++    const expiresAt = addMinutes(new Date(), 10);
++
++    await ctx.prisma.qRInvite.create({
++      data: {
++        ownerId: ctx.user.id,
++        payload: payloadString,
++        signature,
++        expiresAt
++      }
++    });
++
++    const qrValue = JSON.stringify({ payload: payloadString, signature });
++    const qrPng = await QRCode.toDataURL(qrValue);
++
++    return { qrPng, payload: payloadString, signature, expiresAt };
++  }),
++  acceptQR: authenticatedProcedure
++    .input(
++      z.object({
++        payload: z.string(),
++        signature: z.string()
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      const expected = createHmac('sha256', secret()).update(input.payload).digest('hex');
++      if (expected !== input.signature) {
++        throw new Error('Invalid QR signature');
++      }
++
++      const parsed = JSON.parse(input.payload) as { uid: string; display: string; pubKey: string };
++      if (!parsed.uid || parsed.uid === ctx.user.id) {
++        throw new Error('Invalid QR payload');
++      }
++
++      const invite = await ctx.prisma.qRInvite.findFirst({
++        where: { payload: input.payload, signature: input.signature }
++      });
++
++      if (!invite || invite.expiresAt < new Date()) {
++        throw new Error('QR code expired');
++      }
++
++      const [aId, bId] = [ctx.user.id, parsed.uid].sort();
++      const dmKey = `${aId}:${bId}`;
++
++      const existing = await ctx.prisma.friend.findFirst({ where: { aId, bId } });
++
++      if (existing) {
++        if (existing.state !== 'ACCEPTED') {
++          await ctx.prisma.friend.update({ where: { id: existing.id }, data: { state: 'ACCEPTED' } });
++        }
++      } else {
++        await ctx.prisma.friend.create({
++          data: {
++            aId,
++            bId,
++            state: 'ACCEPTED'
++          }
++        });
++      }
++
++      const conversation = await ctx.prisma.conversation.upsert({
++        where: { dmKey },
++        update: {},
++        create: {
++          type: 'DM',
++          createdBy: ctx.user.id,
++          dmKey,
++          members: {
++            createMany: {
++              data: [
++                { userId: aId, role: 'member' },
++                { userId: bId, role: 'member' }
++              ]
++            }
++          }
++        },
++        include: {
++          members: true
++        }
++      });
++
++      return { ok: true, conversationId: conversation.id };
++    })
++});
+diff --git a/apps/api/src/routers/parent.ts b/apps/api/src/routers/parent.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c2c68a59972345ccb028375f1b5dd21214df954
+--- /dev/null
++++ b/apps/api/src/routers/parent.ts
+@@ -0,0 +1,57 @@
++import { z } from 'zod';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const minutesSchema = z.number().int().min(0).max(1439);
++
++export const parentRouter = router({
++  setNightWindow: authenticatedProcedure
++    .input(
++      z.object({
++        childId: z.string(),
++        start: minutesSchema,
++        end: minutesSchema
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      if (ctx.user.role !== 'PARENT') {
++        throw new Error('Only parents can adjust night mode');
++      }
++
++      const child = await ctx.prisma.user.findUnique({ where: { id: input.childId }, include: { profile: true } });
++      if (!child || child.role !== 'TEEN') {
++        throw new Error('Child not found or not a teen');
++      }
++
++      const link = await ctx.prisma.parentalLink.upsert({
++        where: { childId_parentId: { childId: input.childId, parentId: ctx.user.id } },
++        update: {
++          nightStart: input.start,
++          nightEnd: input.end
++        },
++        create: {
++          childId: input.childId,
++          parentId: ctx.user.id,
++          nightStart: input.start,
++          nightEnd: input.end,
++          teenCoinCap: 1000
++        }
++      });
++
++      await ctx.prisma.profile.upsert({
++        where: { userId: input.childId },
++        update: {
++          nightStart: input.start,
++          nightEnd: input.end
++        },
++        create: {
++          userId: input.childId,
++          display: child.email.split('@')[0],
++          status: 'offline',
++          nightStart: input.start,
++          nightEnd: input.end
++        }
++      });
++
++      return link;
++    })
++});
+diff --git a/apps/api/src/routers/presence.ts b/apps/api/src/routers/presence.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..00b453ac6448250d350e17450193cbc054bb558e
+--- /dev/null
++++ b/apps/api/src/routers/presence.ts
+@@ -0,0 +1,27 @@
++import { z } from 'zod';
++import { emitToUser } from '../socket.js';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++export const presenceRouter = router({
++  set: authenticatedProcedure
++    .input(z.object({ status: z.enum(['online', 'offline', 'busy']) }))
++    .mutation(async ({ ctx, input }) => {
++      await ctx.prisma.profile.upsert({
++        where: { userId: ctx.user.id },
++        update: {
++          status: input.status,
++          lastActiveAt: new Date()
++        },
++        create: {
++          userId: ctx.user.id,
++          display: ctx.user.profile?.display ?? ctx.user.email.split('@')[0],
++          status: input.status,
++          lastActiveAt: new Date()
++        }
++      });
++
++      emitToUser(ctx.user.id, 'presence:update', { userId: ctx.user.id, status: input.status });
++
++      return { status: input.status };
++    })
++});
+diff --git a/apps/api/src/routers/story.ts b/apps/api/src/routers/story.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..232afde57086311ca06ff4714ed225d9b2e44722
+--- /dev/null
++++ b/apps/api/src/routers/story.ts
+@@ -0,0 +1,62 @@
++import { randomUUID } from 'node:crypto';
++import { mkdir, writeFile } from 'node:fs/promises';
++import path from 'node:path';
++import { addHours } from 'date-fns';
++import { z } from 'zod';
++import { broadcast } from '../socket.js';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const storiesDir = path.resolve(process.cwd(), 'uploads', 'stories');
++
++export const storyRouter = router({
++  post: authenticatedProcedure
++    .input(
++      z.object({
++        dataUrl: z.string().regex(/^data:.+;base64,/, 'Invalid data URL')
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      await mkdir(storiesDir, { recursive: true });
++      const [meta, base64] = input.dataUrl.split(',');
++      const ext = meta.includes('image/png') ? 'png' : meta.includes('image/gif') ? 'gif' : 'jpg';
++      const buffer = Buffer.from(base64, 'base64');
++      const id = randomUUID();
++      const filename = `${id}.${ext}`;
++      const filePath = path.join(storiesDir, filename);
++      await writeFile(filePath, buffer);
++
++      const expiresAt = addHours(new Date(), 24);
++
++      const story = await ctx.prisma.story.create({
++        data: {
++          userId: ctx.user.id,
++          mediaUrl: `/uploads/stories/${filename}`,
++          expiresAt
++        }
++      });
++
++      broadcast('story:new', { id: story.id, mediaUrl: story.mediaUrl, userId: story.userId, expiresAt });
++
++      return story;
++    }),
++  feed: authenticatedProcedure.query(async ({ ctx }) => {
++    const now = new Date();
++    const friends = await ctx.prisma.friend.findMany({
++      where: { OR: [{ aId: ctx.user.id }, { bId: ctx.user.id }], state: 'ACCEPTED' }
++    });
++    const friendIds = new Set<string>([ctx.user.id]);
++    for (const friend of friends) {
++      friendIds.add(friend.aId === ctx.user.id ? friend.bId : friend.aId);
++    }
++
++    const stories = await ctx.prisma.story.findMany({
++      where: {
++        userId: { in: Array.from(friendIds) },
++        expiresAt: { gt: now }
++      },
++      orderBy: { createdAt: 'desc' }
++    });
++
++    return stories;
++  })
++});
+diff --git a/apps/api/src/routers/user.ts b/apps/api/src/routers/user.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..29d0529f3e239ba3245933532e5e2ac9aef020a1
+--- /dev/null
++++ b/apps/api/src/routers/user.ts
+@@ -0,0 +1,61 @@
++import { z } from 'zod';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const profileInput = z.object({
++  display: z.string().min(2).max(40),
++  bio: z.string().max(160).optional(),
++  status: z.enum(['online', 'offline', 'busy']).optional(),
++  nightStart: z.number().min(0).max(1440).nullable().optional(),
++  nightEnd: z.number().min(0).max(1440).nullable().optional()
++});
++
++export const userRouter = router({
++  me: authenticatedProcedure.query(async ({ ctx }) => {
++    const friends = await ctx.prisma.friend.findMany({
++      where: { OR: [{ aId: ctx.user.id }, { bId: ctx.user.id }], state: 'ACCEPTED' },
++      include: { A: { include: { profile: true } }, B: { include: { profile: true } } }
++    });
++
++    const wallet = await ctx.prisma.wallet.upsert({
++      where: { userId: ctx.user.id },
++      update: {},
++      create: { userId: ctx.user.id, coins: 500 }
++    });
++
++    return {
++      user: ctx.user,
++      profile: ctx.user.profile,
++      wallet,
++      friends: friends.map((friend) => {
++        const other = friend.aId === ctx.user.id ? friend.B : friend.A;
++        return {
++          id: other.id,
++          display: other.profile?.display ?? other.email,
++          status: other.profile?.status ?? 'offline'
++        };
++      })
++    };
++  }),
++  updateProfile: authenticatedProcedure.input(profileInput).mutation(async ({ ctx, input }) => {
++    const profile = await ctx.prisma.profile.upsert({
++      where: { userId: ctx.user.id },
++      update: {
++        display: input.display,
++        bio: input.bio,
++        status: input.status ?? ctx.user.profile?.status ?? 'online',
++        nightStart: input.nightStart ?? ctx.user.profile?.nightStart ?? null,
++        nightEnd: input.nightEnd ?? ctx.user.profile?.nightEnd ?? null
++      },
++      create: {
++        userId: ctx.user.id,
++        display: input.display,
++        bio: input.bio,
++        status: input.status ?? 'online',
++        nightStart: input.nightStart ?? null,
++        nightEnd: input.nightEnd ?? null
++      }
++    });
++
++    return profile;
++  })
++});
+diff --git a/apps/api/src/routers/wallet.ts b/apps/api/src/routers/wallet.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b97fa51212dea4bf57b921b854ab69377d1a8c1
+--- /dev/null
++++ b/apps/api/src/routers/wallet.ts
+@@ -0,0 +1,104 @@
++import { startOfMonth } from 'date-fns';
++import { z } from 'zod';
++import { emitToUser } from '../socket.js';
++import { authenticatedProcedure, router } from '../trpc.js';
++
++const TEEN_CAP = 1000;
++
++export const walletRouter = router({
++  get: authenticatedProcedure.query(async ({ ctx }) => {
++    const wallet = await ctx.prisma.wallet.upsert({
++      where: { userId: ctx.user.id },
++      update: {},
++      create: { userId: ctx.user.id, coins: 500 }
++    });
++
++    const transfers = await ctx.prisma.transfer.findMany({
++      where: {
++        OR: [{ fromId: ctx.user.id }, { toId: ctx.user.id }]
++      },
++      orderBy: { createdAt: 'desc' },
++      take: 20
++    });
++
++    return { wallet, transfers };
++  }),
++  transfer: authenticatedProcedure
++    .input(
++      z.object({
++        toId: z.string(),
++        coins: z.number().int().min(1),
++        memo: z.string().max(120).optional()
++      })
++    )
++    .mutation(async ({ ctx, input }) => {
++      if (input.toId === ctx.user.id) {
++        throw new Error('Cannot transfer to self');
++      }
++
++      const [senderWallet, recipientWallet, recipient] = await Promise.all([
++        ctx.prisma.wallet.upsert({
++          where: { userId: ctx.user.id },
++          update: {},
++          create: { userId: ctx.user.id, coins: 500 }
++        }),
++        ctx.prisma.wallet.upsert({
++          where: { userId: input.toId },
++          update: {},
++          create: { userId: input.toId, coins: 500 }
++        }),
++        ctx.prisma.user.findUnique({ where: { id: input.toId } })
++      ]);
++
++      if (!recipient) {
++        throw new Error('Recipient not found');
++      }
++
++      if (senderWallet.coins < input.coins) {
++        throw new Error('Insufficient balance');
++      }
++
++      if (ctx.user.role === 'TEEN') {
++        const monthStart = startOfMonth(new Date());
++        const totalSent = await ctx.prisma.transfer.aggregate({
++          where: {
++            fromId: ctx.user.id,
++            createdAt: { gte: monthStart }
++          },
++          _sum: { coins: true }
++        });
++        const alreadySent = totalSent._sum.coins ?? 0;
++        if (alreadySent + input.coins > TEEN_CAP) {
++          throw new Error('Teen monthly cap exceeded');
++        }
++      }
++
++      const [updatedSender, updatedRecipient, transfer] = await ctx.prisma.$transaction([
++        ctx.prisma.wallet.update({
++          where: { userId: ctx.user.id },
++          data: { coins: { decrement: input.coins } }
++        }),
++        ctx.prisma.wallet.update({
++          where: { userId: input.toId },
++          data: { coins: { increment: input.coins } }
++        }),
++        ctx.prisma.transfer.create({
++          data: {
++            fromId: ctx.user.id,
++            toId: input.toId,
++            coins: input.coins,
++            memo: input.memo
++          }
++        })
++      ]);
++
++      emitToUser(ctx.user.id, 'wallet:update', { balance: updatedSender.coins });
++      emitToUser(input.toId, 'wallet:update', { balance: updatedRecipient.coins });
++
++      return {
++        balance: updatedSender.coins,
++        recipientBalance: updatedRecipient.coins,
++        transfer
++      };
++    })
++});
+diff --git a/apps/api/src/server.ts b/apps/api/src/server.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e12791a6aea90bbc328786bbc87472e367219de9
+--- /dev/null
++++ b/apps/api/src/server.ts
+@@ -0,0 +1,163 @@
++import './prisma.js';
++import express from 'express';
++import cors from 'cors';
++import cookieParser from 'cookie-parser';
++import path from 'node:path';
++import { createServer } from 'node:http';
++import { createExpressMiddleware } from '@trpc/server/adapters/express';
++import { Server as SocketIOServer } from 'socket.io';
++import cron from 'node-cron';
++import jwt from 'jsonwebtoken';
++import { appRouter } from './router.js';
++import { createContext } from './context.js';
++import { prisma } from './prisma.js';
++import { broadcast, emitToConversation, emitToUser, registerSocket } from './socket.js';
++
++const app = express();
++const httpServer = createServer(app);
++const io = new SocketIOServer(httpServer, {
++  cors: {
++    origin: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:3000'],
++    credentials: true
++  }
++});
++registerSocket(io);
++
++app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:3000'], credentials: true }));
++app.use(cookieParser());
++app.use(express.json({ limit: '10mb' }));
++app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
++
++app.get('/health', (_req, res) => {
++  res.json({ ok: true, uptime: process.uptime() });
++});
++
++app.use(
++  '/trpc',
++  createExpressMiddleware({
++    router: appRouter,
++    createContext
++  })
++);
++
++io.use(async (socket, next) => {
++  const token = socket.handshake.auth?.token ?? socket.handshake.headers.authorization?.split(' ')[1];
++  if (!token) {
++    return next(new Error('Unauthorized'));
++  }
++  try {
++    const secret = process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
++    if (!secret) {
++      throw new Error('JWT secret missing');
++    }
++    const decoded = jwt.verify(token, secret) as { sub: string };
++    const user = await prisma.user.findUnique({
++      where: { id: decoded.sub },
++      include: {
++        profile: true
++      }
++    });
++    if (!user) {
++      return next(new Error('Unauthorized'));
++    }
++    (socket.data as { userId: string }).userId = user.id;
++    await prisma.profile.upsert({
++      where: { userId: user.id },
++      update: { status: 'online', lastActiveAt: new Date() },
++      create: {
++        userId: user.id,
++        display: user.email.split('@')[0],
++        status: 'online',
++        nightStart: 1380,
++        nightEnd: 300,
++        lastActiveAt: new Date()
++      }
++    });
++    next();
++  } catch (err) {
++    next(err as Error);
++  }
++});
++
++io.on('connection', async (socket) => {
++  const { userId } = socket.data as { userId: string };
++  socket.join(`user:${userId}`);
++
++  const memberships = await prisma.member.findMany({ where: { userId } });
++  memberships.forEach((membership) => {
++    socket.join(`conversation:${membership.convId}`);
++  });
++
++  socket.on('typing', (payload: { conversationId: string }) => {
++    emitToConversation(payload.conversationId, 'typing', { userId });
++  });
++
++  socket.on('sendMessage', async (payload: { conversationId: string; text?: string; kind?: string }) => {
++    const conversation = await prisma.conversation.findUnique({ where: { id: payload.conversationId } });
++    if (!conversation) return;
++    const message = await prisma.message.create({
++      data: {
++        convId: payload.conversationId,
++        senderId: userId,
++        kind: (payload.kind as any) ?? 'text',
++        text: payload.text
++      },
++      include: {
++        sender: { include: { profile: true } }
++      }
++    });
++    await prisma.conversation.update({ where: { id: payload.conversationId }, data: { updatedAt: new Date() } });
++    emitToConversation(payload.conversationId, 'message:new', {
++      id: message.id,
++      conversationId: payload.conversationId,
++      kind: message.kind,
++      text: message.text,
++      createdAt: message.createdAt,
++      sender: {
++        id: message.sender.id,
++        display: message.sender.profile?.display ?? message.sender.email
++      }
++    });
++  });
++
++  socket.on('presence', async (payload: { status: 'online' | 'offline' | 'busy' }) => {
++    await prisma.profile.upsert({
++      where: { userId },
++      update: { status: payload.status, lastActiveAt: new Date() },
++      create: {
++        userId,
++        display: userId,
++        status: payload.status,
++        lastActiveAt: new Date()
++      }
++    });
++    emitToUser(userId, 'presence:update', { userId, status: payload.status });
++  });
++
++  socket.on('disconnect', async () => {
++    await prisma.profile.upsert({
++      where: { userId },
++      update: { status: 'offline', lastActiveAt: new Date() },
++      create: {
++        userId,
++        display: userId,
++        status: 'offline',
++        lastActiveAt: new Date()
++      }
++    });
++  });
++});
++
++cron.schedule('*/10 * * * *', async () => {
++  const now = new Date();
++  const expired = await prisma.story.findMany({ where: { expiresAt: { lt: now } } });
++  if (expired.length) {
++    await prisma.story.deleteMany({ where: { id: { in: expired.map((story) => story.id) } } });
++    broadcast('story:expired', expired.map((story) => story.id));
++  }
++});
++
++const port = Number(process.env.PORT ?? 4000);
++httpServer.listen(port, () => {
++  console.log(`API ready on http://localhost:${port}`);
++});
+diff --git a/apps/api/src/socket.ts b/apps/api/src/socket.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5612b73578abdaeef8806dcaeefdf831cf52cf30
+--- /dev/null
++++ b/apps/api/src/socket.ts
+@@ -0,0 +1,23 @@
++import type { Server } from 'socket.io';
++
++let io: Server | null = null;
++
++export function registerSocket(server: Server) {
++  io = server;
++}
++
++export function getSocket() {
++  return io;
++}
++
++export function emitToConversation(conversationId: string, event: string, payload: unknown) {
++  io?.to(`conversation:${conversationId}`).emit(event, payload);
++}
++
++export function emitToUser(userId: string, event: string, payload: unknown) {
++  io?.to(`user:${userId}`).emit(event, payload);
++}
++
++export function broadcast(event: string, payload: unknown) {
++  io?.emit(event, payload);
++}
+diff --git a/apps/api/src/trpc.ts b/apps/api/src/trpc.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..42d2b04c89d459de5674316238cae1d1cbfdfade
+--- /dev/null
++++ b/apps/api/src/trpc.ts
+@@ -0,0 +1,22 @@
++import { initTRPC, TRPCError } from '@trpc/server';
++import superjson from 'superjson';
++import type { AppContext } from './context.js';
++
++const t = initTRPC.context<AppContext>().create({ transformer: superjson });
++
++export const router = t.router;
++export const procedure = t.procedure;
++
++export const authenticatedProcedure = procedure.use(({ ctx, next }) => {
++  if (!ctx.user) {
++    throw new TRPCError({ code: 'UNAUTHORIZED' });
++  }
++  return next({ ctx: { ...ctx, user: ctx.user } });
++});
++
++export const moderatorProcedure = authenticatedProcedure.use(({ ctx, next }) => {
++  if (ctx.role !== 'PARENT' && ctx.role !== 'ADULT') {
++    throw new TRPCError({ code: 'FORBIDDEN' });
++  }
++  return next();
++});
+diff --git a/apps/api/tsconfig.json b/apps/api/tsconfig.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..94134fe604557a6e8121ca741ca3526c87ce0ef7
+--- /dev/null
++++ b/apps/api/tsconfig.json
+@@ -0,0 +1,17 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "outDir": "dist",
++    "module": "ESNext",
++    "moduleResolution": "Node",
++    "types": ["node"],
++    "resolveJsonModule": true
++  },
++  "include": ["src/**/*", "prisma/**/*"],
++  "ts-node": {
++    "swc": true,
++    "compilerOptions": {
++      "module": "CommonJS"
++    }
++  }
++}
+diff --git a/apps/web/app/api/auth/[...nextauth]/route.ts b/apps/web/app/api/auth/[...nextauth]/route.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a3b5c0a8dade05d824f40d11352c66130943f5f
+--- /dev/null
++++ b/apps/web/app/api/auth/[...nextauth]/route.ts
+@@ -0,0 +1,6 @@
++import NextAuth from 'next-auth';
++import { authOptions } from '@/lib/authOptions';
++
++const handler = NextAuth(authOptions);
++
++export { handler as GET, handler as POST };
+diff --git a/apps/web/app/globals.css b/apps/web/app/globals.css
+new file mode 100644
+index 0000000000000000000000000000000000000000..97ee0c6b37902e830bec9670261863d5997fe40e
+--- /dev/null
++++ b/apps/web/app/globals.css
+@@ -0,0 +1,29 @@
++@tailwind base;
++@tailwind components;
++@tailwind utilities;
++
++:root {
++  --bubble-radius: 1.5rem;
++  --bubble-shadow: 0 2px 12px rgba(124, 58, 237, 0.35);
++  --accent: #a855f7;
++  --bg-0: #0B0B0F;
++  --bg-1: #15151B;
++}
++
++body {
++  background: var(--bg-0);
++  color: #e5e7eb;
++}
++
++* {
++  scrollbar-width: thin;
++}
++
++a {
++  color: var(--accent);
++}
++
++:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
+diff --git a/apps/web/app/layout.tsx b/apps/web/app/layout.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..c005dea03ec0dedf77fbd97560e5f31772493fd9
+--- /dev/null
++++ b/apps/web/app/layout.tsx
+@@ -0,0 +1,18 @@
++import './globals.css';
++import type { ReactNode } from 'react';
++import { AppProviders } from './providers';
++
++export const metadata = {
++  title: 'Dune Messenger',
++  description: 'Secure social messaging prototype'
++};
++
++export default function RootLayout({ children }: { children: ReactNode }) {
++  return (
++    <html lang="fr" className="dark">
++      <body className="bg-[#0B0B0F] text-neutral-200 antialiased">
++        <AppProviders>{children}</AppProviders>
++      </body>
++    </html>
++  );
++}
+diff --git a/apps/web/app/page.tsx b/apps/web/app/page.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..98ca057d1623cbf684d77214fb083ac72c1a4c15
+--- /dev/null
++++ b/apps/web/app/page.tsx
+@@ -0,0 +1,568 @@
++'use client';
++
++import { BottomNav, MessageBubble, StoryBar } from '@dune/ui';
++import { applyTeenNightMode } from '@dune/proto';
++import { formatDistanceToNow } from 'date-fns';
++import { fr } from 'date-fns/locale';
++import dynamic from 'next/dynamic';
++import { signIn, signOut, useSession } from 'next-auth/react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { createTrpcClient } from '@/lib/trpcClient';
++import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket';
++import { useForm } from 'react-hook-form';
++
++const QrReader = dynamic(() => import('react-qr-reader').then((mod) => mod.QrReader), { ssr: false });
++
++type ConversationSummary = {
++  id: string;
++  type: string;
++  lastMessage: {
++    id: string;
++    text: string | null;
++    createdAt: string;
++    sender: { id: string; display: string };
++  } | null;
++  participant: { id: string; display: string; status: string | null } | null;
++};
++
++type MessageItem = {
++  id: string;
++  createdAt: string;
++  kind: string;
++  text: string | null;
++  mediaUrl: string | null;
++  sender: { id: string; display: string };
++};
++
++type StoryItem = {
++  id: string;
++  userId: string;
++  mediaUrl: string;
++  expiresAt: string;
++};
++
++type WalletState = {
++  wallet: { coins: number };
++  transfers: { id: string; coins: number; memo: string | null; createdAt: string; fromId: string; toId: string }[];
++};
++
++const tabs = ['home', 'explore', 'scan', 'create', 'messages'] as const;
++type Tab = (typeof tabs)[number];
++
++export default function HomePage() {
++  const { data: session, status } = useSession();
++  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
++  const [activeTab, setActiveTab] = useState<Tab>('messages');
++  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
++  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
++  const [messages, setMessages] = useState<MessageItem[]>([]);
++  const [stories, setStories] = useState<StoryItem[]>([]);
++  const [wallet, setWallet] = useState<WalletState | null>(null);
++  const [friends, setFriends] = useState<{ id: string; display: string; status: string }[]>([]);
++  const [qrPreview, setQrPreview] = useState<string | null>(null);
++  const [nightModeActive, setNightModeActive] = useState(false);
++  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
++  const [isTeen, setIsTeen] = useState(false);
++  const [clientReady, setClientReady] = useState(false);
++
++  const client = useMemo(() => {
++    if (session?.apiToken) {
++      return createTrpcClient(session.apiToken);
++    }
++    return null;
++  }, [session?.apiToken]);
++
++  const loadInitialData = useCallback(async () => {
++    if (!client || !session?.apiToken) return;
++    const [userData, convs, storyFeed, walletData] = await Promise.all([
++      client.user.me.query(),
++      client.chat.list.query(),
++      client.story.feed.query(),
++      client.wallet.get.query()
++    ]);
++    setFriends(userData.friends);
++    setConversations(convs);
++    setStories(storyFeed as StoryItem[]);
++    setWallet(walletData as WalletState);
++    const teen = userData.user.role === 'TEEN';
++    setIsTeen(teen);
++    const nightActive = teen
++      ? applyTeenNightMode(new Date(), userData.profile?.nightStart ?? undefined, userData.profile?.nightEnd ?? undefined)
++      : false;
++    setNightModeActive(nightActive);
++    if (convs.length > 0) {
++      setSelectedConversation(convs[0].id);
++      const history = await client.chat.history.query({ conversationId: convs[0].id, limit: 30 });
++      setMessages(history.items as MessageItem[]);
++    }
++    setClientReady(true);
++  }, [client, session?.apiToken]);
++
++  useEffect(() => {
++    if (!client || !session?.apiToken) return;
++    loadInitialData();
++  }, [client, session?.apiToken, loadInitialData]);
++
++  useEffect(() => {
++    if (!session?.apiToken) return;
++    const socket = connectSocket(session.apiToken);
++    socket.on('message:new', (payload: MessageItem & { conversationId: string }) => {
++      setConversations((prev) =>
++        prev.map((conv) =>
++          conv.id === payload.conversationId
++            ? {
++                ...conv,
++                lastMessage: {
++                  id: payload.id,
++                  text: payload.text,
++                  createdAt: payload.createdAt,
++                  sender: payload.sender
++                }
++              }
++            : conv
++        )
++      );
++      setMessages((prev) => (payload.conversationId === selectedConversation ? [...prev, payload] : prev));
++    });
++    socket.on('typing', ({ userId }) => {
++      setTypingUsers((prev) => new Set(prev).add(userId));
++      setTimeout(() => {
++        setTypingUsers((prev) => {
++          const next = new Set(prev);
++          next.delete(userId);
++          return next;
++        });
++      }, 1500);
++    });
++    socket.on('story:new', (story: StoryItem) => {
++      setStories((prev) => [story, ...prev]);
++    });
++    socket.on('story:expired', (ids: string[]) => {
++      setStories((prev) => prev.filter((story) => !ids.includes(story.id)));
++    });
++    socket.on('wallet:update', ({ balance }: { balance: number }) => {
++      setWallet((prev) => (prev ? { ...prev, wallet: { coins: balance }, transfers: prev.transfers } : prev));
++    });
++    socket.on('presence:update', ({ userId, status: presence }) => {
++      setFriends((prev) =>
++        prev.map((friend) => (friend.id === userId ? { ...friend, status: presence } : friend))
++      );
++      setConversations((prev) =>
++        prev.map((conv) =>
++          conv.participant?.id === userId
++            ? {
++                ...conv,
++                participant: { ...conv.participant, status: presence }
++              }
++            : conv
++        )
++      );
++    });
++    return () => {
++      socket.removeAllListeners();
++      disconnectSocket();
++    };
++  }, [session?.apiToken, selectedConversation]);
++
++  useEffect(() => {
++    if (!clientReady || !client) return;
++    client.presence.set.mutate({ status: 'online' }).catch(() => undefined);
++    return () => {
++      getSocket()?.emit('presence', { status: 'offline' });
++    };
++  }, [clientReady, client]);
++
++  const handleSelectConversation = useCallback(
++    async (conversationId: string) => {
++      if (!client) return;
++      setSelectedConversation(conversationId);
++      const history = await client.chat.history.query({ conversationId, limit: 50 });
++      setMessages(history.items as MessageItem[]);
++    },
++    [client]
++  );
++
++  const handleSendMessage = useCallback(
++    async (text: string) => {
++      if (!client || !selectedConversation || !text.trim()) return;
++      await client.chat.send.mutate({ conversationId: selectedConversation, text, kind: 'text' });
++      getSocket()?.emit('typing', { conversationId: selectedConversation });
++    },
++    [client, selectedConversation]
++  );
++
++  const { register, handleSubmit, reset } = useForm<{ message: string }>({ defaultValues: { message: '' } });
++  const messageField = register('message', {
++    onChange: () => {
++      if (selectedConversation) {
++        getSocket()?.emit('typing', { conversationId: selectedConversation });
++      }
++    }
++  });
++
++  const onSubmit = handleSubmit(async ({ message }) => {
++    await handleSendMessage(message);
++    reset({ message: '' });
++  });
++
++  const handleTransfer = useCallback(
++    async (event: React.FormEvent<HTMLFormElement>) => {
++      if (!client) return;
++      event.preventDefault();
++      const formData = new FormData(event.currentTarget);
++      const toId = formData.get('toId') as string;
++      const coins = Number(formData.get('coins'));
++      const memo = (formData.get('memo') as string) || undefined;
++      await client.wallet.transfer.mutate({ toId, coins, memo });
++      const updated = await client.wallet.get.query();
++      setWallet(updated as WalletState);
++      event.currentTarget.reset();
++    },
++    [client]
++  );
++
++  const handleIssueQR = useCallback(async () => {
++    if (!client) return;
++    const data = await client.friends.issueQR.mutate();
++    setQrPreview(data.qrPng);
++  }, [client]);
++
++  const handleStoryUpload = useCallback(
++    async (event: React.ChangeEvent<HTMLInputElement>) => {
++      if (!client) return;
++      const file = event.target.files?.[0];
++      if (!file) return;
++      const buffer = await file.arrayBuffer();
++      const bytes = new Uint8Array(buffer);
++      let binary = '';
++      bytes.forEach((byte) => {
++        binary += String.fromCharCode(byte);
++      });
++      const base64 = typeof window !== 'undefined' ? window.btoa(binary) : '';
++      const dataUrl = `data:${file.type};base64,${base64}`;
++      const story = await client.story.post.mutate({ dataUrl });
++      setStories((prev) => [story as StoryItem, ...prev]);
++      event.target.value = '';
++    },
++    [client]
++  );
++
++  const handleScan = useCallback(
++    async (result: string | null) => {
++      if (!client || !result) return;
++      try {
++        const parsed = JSON.parse(result);
++        if (parsed.payload && parsed.signature) {
++          await client.friends.acceptQR.mutate({ payload: parsed.payload, signature: parsed.signature });
++          const convs = await client.chat.list.query();
++          setConversations(convs);
++        }
++      } catch (error) {
++        console.error('Invalid QR payload', error);
++      }
++    },
++    [client]
++  );
++
++  const isLoading = status === 'loading' || (status === 'authenticated' && !clientReady);
++
++  if (isLoading) {
++    return <div className="flex min-h-screen items-center justify-center text-neutral-400">Chargement…</div>;
++  }
++
++  if (!session) {
++    const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
++      event.preventDefault();
++      const formData = new FormData(event.currentTarget);
++      const email = formData.get('email') as string;
++      if (!email) return;
++      await signIn('email', { email, redirect: false });
++      alert('Lien magique envoyé dans les logs du serveur Next.js. Copiez-le pour vous connecter.');
++    };
++
++    return (
++      <main className="flex min-h-screen flex-col items-center justify-center bg-[#0B0B0F] p-6 text-neutral-200">
++        <h1 className="mb-4 text-3xl font-semibold">Dune Messenger</h1>
++        <form onSubmit={handleLogin} className="flex w-full max-w-sm flex-col gap-4 rounded-2xl border border-[#1F1F26] bg-[#15151B] p-6">
++          <label className="text-sm text-neutral-400" htmlFor="email">
++            Connexion par lien magique
++          </label>
++          <input
++            id="email"
++            name="email"
++            type="email"
++            required
++            className="rounded-xl bg-[#0B0B0F] px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500 focus:outline focus:outline-2 focus:outline-[#a855f7]"
++            placeholder="toi@dune.local"
++          />
++          <button
++            type="submit"
++            className="rounded-xl bg-gradient-to-br from-[#b26cff] to-[#7c3aed] py-2 text-sm font-semibold text-white shadow-[0_2px_12px_rgba(124,58,237,.35)]"
++          >
++            Recevoir le lien magique
++          </button>
++          <p className="text-xs text-neutral-500">
++            Astuce: utilisez les comptes seedés <code>moi@dune.local</code>, <code>nova@dune.local</code> ou <code>eden@dune.local</code>.
++          </p>
++        </form>
++      </main>
++    );
++  }
++
++  const activeConversation = conversations.find((conversation) => conversation.id === selectedConversation);
++  const storyBarItems = stories.map((story) => {
++    const friend = friends.find((f) => f.id === story.userId);
++    return {
++      id: story.id,
++      label: story.userId === session.user?.id ? 'Moi' : friend?.display ?? story.userId.slice(0, 4),
++      seen: story.userId === session.user?.id
++    };
++  });
++
++  return (
++    <main className="relative min-h-screen pb-20">
++      {isTeen && nightModeActive && (
++        <div className="sticky top-0 z-20 flex items-center justify-between bg-[#7c3aed] px-4 py-2 text-sm text-white shadow-lg">
++          <span>Mode nuit adolescent actif — messagerie en lecture seule.</span>
++          <span className="text-xs text-white/70">
++            {session.user?.role === 'TEEN' ? 'Demande un parent pour modifier la plage.' : ''}
++          </span>
++        </div>
++      )}
++      <section className="space-y-4 px-4 pb-4 pt-6">
++        <header className="flex items-center justify-between">
++          <div>
++            <p className="text-lg font-semibold">Bonjour {session.user?.email?.split('@')[0]}</p>
++            <p className="text-sm text-neutral-400">{friends.length} amis connectés</p>
++          </div>
++          <button
++            onClick={() => signOut({ callbackUrl: '/' })}
++            className="rounded-full border border-[#23232A] px-3 py-1 text-xs text-neutral-400 hover:text-neutral-100"
++          >
++            Déconnexion
++          </button>
++        </header>
++        <StoryBar items={storyBarItems} />
++      </section>
++
++      {activeTab === 'messages' && (
++        <section className="grid gap-4 px-4 pb-6">
++          <div className="space-y-3">
++            <h2 className="text-sm uppercase tracking-wide text-neutral-500">Conversations</h2>
++            <div className="flex gap-3 overflow-x-auto">
++              {conversations.map((conversation) => (
++                <button
++                  key={conversation.id}
++                  onClick={() => handleSelectConversation(conversation.id)}
++                  className={`min-w-[160px] rounded-2xl border px-4 py-3 text-left transition ${
++                    selectedConversation === conversation.id ? 'border-[#a855f7] bg-[#15151B]' : 'border-[#1F1F26] bg-[#0B0B0F]'
++                  }`}
++                >
++                  <p className="font-semibold text-neutral-200">{conversation.participant?.display ?? 'Groupe'}</p>
++                  <p className="text-xs text-neutral-500">
++                    {conversation.lastMessage?.text
++                      ? conversation.lastMessage.text
++                      : 'Aucun message' }
++                  </p>
++                  {conversation.lastMessage?.createdAt && (
++                    <p className="mt-1 text-[0.65rem] text-neutral-500">
++                      {formatDistanceToNow(new Date(conversation.lastMessage.createdAt), { addSuffix: true, locale: fr })}
++                    </p>
++                  )}
++                </button>
++              ))}
++            </div>
++          </div>
++          {selectedConversation && (
++            <div className="rounded-3xl border border-[#1F1F26] bg-[#0B0B0F]">
++              <div className="flex items-center justify-between border-b border-[#1F1F26] px-4 py-3 text-sm text-neutral-400">
++                <span className="flex items-center gap-2">
++                  <span className={`h-2 w-2 rounded-full ${
++                    activeConversation?.participant?.status === 'online'
++                      ? 'bg-emerald-400'
++                      : activeConversation?.participant?.status === 'busy'
++                      ? 'bg-amber-400'
++                      : 'bg-neutral-600'
++                  }`} />
++                  {activeConversation?.participant?.display ?? 'Conversation'}
++                </span>
++                {typingUsers.size > 0 && <span className="text-xs text-neutral-500">{Array.from(typingUsers).length} en train d'écrire…</span>}
++              </div>
++              <div className="flex max-h-[420px] flex-col gap-4 overflow-y-auto px-4 py-6">
++                {messages.map((message) => (
++                  <MessageBubble
++                    key={message.id}
++                    author={message.sender.id === session.user?.id ? 'self' : 'other'}
++                    text={message.text ?? ''}
++                    time={formatDistanceToNow(new Date(message.createdAt), { addSuffix: true, locale: fr })}
++                  />
++                ))}
++              </div>
++              <form onSubmit={onSubmit} className="border-t border-[#1F1F26] px-4 py-3">
++                <div className="flex items-center gap-2 rounded-2xl bg-[#15151B] px-3 py-2">
++                  <input
++                    {...messageField}
++                    disabled={isTeen && nightModeActive}
++                    className="flex-1 bg-transparent text-sm text-[#EDEDED] placeholder:text-neutral-500 focus:outline-none"
++                    placeholder={isTeen && nightModeActive ? 'Mode nuit actif' : 'Envoyer un message sécurisé'}
++                  />
++                  <button
++                    type="submit"
++                    className="rounded-full bg-[#23232A] px-3 py-1 text-sm text-neutral-300 hover:text-white"
++                    disabled={isTeen && nightModeActive}
++                  >
++                    Envoyer
++                  </button>
++                </div>
++              </form>
++            </div>
++          )}
++        </section>
++      )}
++
++      {activeTab === 'create' && (
++        <section className="space-y-6 px-4 pb-6">
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Publier une story</h3>
++            <p className="mt-1 text-sm text-neutral-400">Choisissez une image ou un GIF, la story expirera dans 24h.</p>
++            <input
++              type="file"
++              accept="image/*"
++              onChange={handleStoryUpload}
++              disabled={isTeen && nightModeActive}
++              className="mt-4 text-sm text-neutral-300"
++            />
++          </div>
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Partager votre QR sécurisé</h3>
++            <button
++              onClick={handleIssueQR}
++              className="mt-4 rounded-xl bg-gradient-to-br from-[#b26cff] to-[#7c3aed] px-4 py-2 text-sm font-semibold text-white"
++            >
++              Générer un QR
++            </button>
++            {qrPreview && (
++              <img src={qrPreview} alt="QR d'ajout d'ami" className="mt-4 h-48 w-48 rounded-2xl border border-[#1F1F26]" />)
++            }
++          </div>
++        </section>
++      )}
++
++      {activeTab === 'scan' && (
++        <section className="px-4 pb-6">
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Scanner un QR</h3>
++            <p className="mt-1 text-sm text-neutral-400">Cadrez le QR d'un ami pour créer un canal chiffré.</p>
++            <div className="mt-4 overflow-hidden rounded-2xl border border-[#1F1F26]">
++              <QrReader
++                constraints={{ facingMode: 'environment' }}
++                onResult={(result) => {
++                  if (result) {
++                    handleScan((result as unknown as { getText: () => string }).getText());
++                  }
++                }}
++              />
++            </div>
++          </div>
++        </section>
++      )}
++
++      {activeTab === 'home' && (
++        <section className="px-4 pb-6">
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Statut & optimisation</h3>
++            <p className="mt-2 text-sm text-neutral-400">
++              Statut actuel : <span className="font-medium text-neutral-100">{nightModeActive ? 'Mode nuit' : 'Disponible'}</span>
++            </p>
++            <p className="mt-2 text-sm text-neutral-400">
++              Optimisation active : <span className="font-medium text-neutral-100">balanced</span>
++            </p>
++            <p className="mt-2 text-sm text-neutral-500">
++              Les contrôles parentaux s'appliquent automatiquement aux comptes ados.
++            </p>
++          </div>
++        </section>
++      )}
++
++      {activeTab === 'explore' && (
++        <section className="px-4 pb-6">
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Stories récentes</h3>
++            <div className="mt-4 grid gap-4 md:grid-cols-2">
++              {stories.map((story) => (
++                <div key={story.id} className="overflow-hidden rounded-3xl border border-[#1F1F26]">
++                  <img
++                    src={story.mediaUrl.startsWith('http') ? story.mediaUrl : `${apiBase}${story.mediaUrl}`}
++                    alt="story"
++                    className="h-56 w-full object-cover"
++                  />
++                  <div className="px-4 py-2 text-xs text-neutral-400">
++                    Expire {formatDistanceToNow(new Date(story.expiresAt), { addSuffix: true, locale: fr })}
++                  </div>
++                </div>
++              ))}
++            </div>
++          </div>
++        </section>
++      )}
++
++      {activeTab === 'messages' && wallet && (
++        <section className="px-4 pb-6">
++          <div className="rounded-3xl border border-[#1F1F26] bg-[#15151B] p-6">
++            <h3 className="text-lg font-semibold text-neutral-100">Transférer des coins</h3>
++            <p className="mt-1 text-sm text-neutral-400">Solde : {wallet.wallet.coins} coins</p>
++            <form onSubmit={handleTransfer} className="mt-4 grid gap-3 md:grid-cols-4">
++              <select name="toId" className="rounded-xl bg-[#0B0B0F] px-3 py-2 text-sm text-neutral-100" required>
++                <option value="">Choisir un ami</option>
++                {friends.map((friend) => (
++                  <option key={friend.id} value={friend.id}>
++                    {friend.display}
++                  </option>
++                ))}
++              </select>
++              <input
++                name="coins"
++                type="number"
++                min={1}
++                className="rounded-xl bg-[#0B0B0F] px-3 py-2 text-sm text-neutral-100"
++                placeholder="Coins"
++                required
++              />
++              <input
++                name="memo"
++                className="rounded-xl bg-[#0B0B0F] px-3 py-2 text-sm text-neutral-100"
++                placeholder="Mémo (optionnel)"
++              />
++              <button
++                type="submit"
++                className="rounded-xl bg-gradient-to-br from-[#b26cff] to-[#7c3aed] px-3 py-2 text-sm font-semibold text-white"
++              >
++                Envoyer
++              </button>
++            </form>
++            <h4 className="mt-6 text-sm font-semibold text-neutral-300">Historique</h4>
++            <ul className="mt-2 space-y-2 text-sm text-neutral-400">
++              {wallet.transfers.map((transfer) => (
++                <li key={transfer.id} className="flex items-center justify-between rounded-xl bg-[#0B0B0F] px-3 py-2">
++                  <span>
++                    {transfer.coins} coins {transfer.fromId === session.user?.id ? 'envoyés' : 'reçus'}
++                    {transfer.memo ? ` – ${transfer.memo}` : ''}
++                  </span>
++                  <span className="text-xs text-neutral-500">
++                    {formatDistanceToNow(new Date(transfer.createdAt), { addSuffix: true, locale: fr })}
++                  </span>
++                </li>
++              ))}
++            </ul>
++          </div>
++        </section>
++      )}
++
++      <BottomNav
++        active={activeTab}
++        unread={conversations.filter((conv) => conv.lastMessage && conv.lastMessage.sender.id !== session.user?.id).length}
++        onSelect={setActiveTab}
++      />
++    </main>
++  );
++}
+diff --git a/apps/web/app/providers.tsx b/apps/web/app/providers.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..f981ed79332bcb8bf387a087b4fbee63b2c597de
+--- /dev/null
++++ b/apps/web/app/providers.tsx
+@@ -0,0 +1,15 @@
++'use client';
++
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
++import { SessionProvider } from 'next-auth/react';
++import { useState } from 'react';
++
++export function AppProviders({ children }: { children: React.ReactNode }) {
++  const [queryClient] = useState(() => new QueryClient());
++
++  return (
++    <SessionProvider>
++      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
++    </SessionProvider>
++  );
++}
+diff --git a/apps/web/lib/authOptions.ts b/apps/web/lib/authOptions.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3719d9dc9f12e0abf8d8b6d70c867f099799b18e
+--- /dev/null
++++ b/apps/web/lib/authOptions.ts
+@@ -0,0 +1,71 @@
++import { PrismaAdapter } from '@next-auth/prisma-adapter';
++import type { AuthOptions } from 'next-auth';
++import EmailProvider from 'next-auth/providers/email';
++import jwt from 'jsonwebtoken';
++import { prisma } from './prisma';
++
++export const authOptions: AuthOptions = {
++  adapter: PrismaAdapter(prisma),
++  session: { strategy: 'jwt' },
++  pages: { signIn: '/' },
++  providers: [
++    EmailProvider({
++      from: process.env.MAGIC_EMAIL_FROM ?? 'no-reply@dune.local',
++      sendVerificationRequest: async ({ identifier, url }) => {
++        console.info(`Magic link for ${identifier}: ${url}`);
++      }
++    })
++  ],
++  callbacks: {
++    async jwt({ token, user }) {
++      if (user) {
++        token.role = (user as any).role ?? 'ADULT';
++        token.sub = user.id;
++      }
++      if (!token.role && token.sub) {
++        const dbUser = await prisma.user.findUnique({ where: { id: token.sub } });
++        token.role = dbUser?.role ?? 'ADULT';
++      }
++      return token;
++    },
++    async session({ session, token }) {
++      if (session.user && token.sub) {
++        session.user.id = token.sub;
++        session.user.role = (token.role as string) ?? 'ADULT';
++      }
++      const secret = process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET;
++      if (secret && token.sub) {
++        session.apiToken = jwt.sign(
++          {
++            sub: token.sub,
++            role: token.role,
++            email: token.email
++          },
++          secret,
++          { expiresIn: '1h' }
++        );
++      }
++      return session;
++    }
++  },
++  events: {
++    async createUser({ user }) {
++      await prisma.profile.upsert({
++        where: { userId: user.id },
++        update: {},
++        create: {
++          userId: user.id,
++          display: user.email?.split('@')[0] ?? 'Utilisateur',
++          status: 'online',
++          nightStart: 1380,
++          nightEnd: 300
++        }
++      });
++      await prisma.wallet.upsert({
++        where: { userId: user.id },
++        update: {},
++        create: { userId: user.id, coins: 500 }
++      });
++    }
++  }
++};
+diff --git a/apps/web/lib/prisma.ts b/apps/web/lib/prisma.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4674de56404d221ab43699ed48bb71603a12076
+--- /dev/null
++++ b/apps/web/lib/prisma.ts
+@@ -0,0 +1,13 @@
++import { PrismaClient } from '@prisma/client';
++
++const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
++
++export const prisma =
++  globalForPrisma.prisma ??
++  new PrismaClient({
++    log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error']
++  });
++
++if (process.env.NODE_ENV !== 'production') {
++  globalForPrisma.prisma = prisma;
++}
+diff --git a/apps/web/lib/socket.ts b/apps/web/lib/socket.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5bbcc49fc024ca2d6cb95582a9953fd1e13bacdc
+--- /dev/null
++++ b/apps/web/lib/socket.ts
+@@ -0,0 +1,23 @@
++import { io, Socket } from 'socket.io-client';
++
++const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
++
++let socket: Socket | null = null;
++
++export function connectSocket(token: string) {
++  if (socket) return socket;
++  socket = io(apiBase, {
++    transports: ['websocket'],
++    auth: { token }
++  });
++  return socket;
++}
++
++export function getSocket() {
++  return socket;
++}
++
++export function disconnectSocket() {
++  socket?.disconnect();
++  socket = null;
++}
+diff --git a/apps/web/lib/trpcClient.ts b/apps/web/lib/trpcClient.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..faecefd3c555423834f79a20fe89d8896a5156d1
+--- /dev/null
++++ b/apps/web/lib/trpcClient.ts
+@@ -0,0 +1,26 @@
++import { createTRPCProxyClient, httpBatchLink } from '@trpc/client';
++import superjson from 'superjson';
++import type { AppRouter } from '@dune/proto';
++
++const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
++
++export function createTrpcClient(token?: string) {
++  return createTRPCProxyClient<AppRouter>({
++    transformer: superjson,
++    links: [
++      httpBatchLink({
++        url: `${apiBase}/trpc`,
++        headers() {
++          return token
++            ? {
++                Authorization: `Bearer ${token}`
++              }
++            : {};
++        },
++        fetch(url, options) {
++          return fetch(url, { ...options, credentials: 'include' });
++        }
++      })
++    ]
++  });
++}
+diff --git a/apps/web/next-env.d.ts b/apps/web/next-env.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..00af21bade9111598367d661265470d6f3e48638
+--- /dev/null
++++ b/apps/web/next-env.d.ts
+@@ -0,0 +1,3 @@
++/// <reference types="next" />
++/// <reference types="next/image-types/global" />
++/// <reference types="next/navigation-types/compat/navigation" />
+diff --git a/apps/web/next.config.js b/apps/web/next.config.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe3a12a0266415e37c5ba779823d8ac07895918b
+--- /dev/null
++++ b/apps/web/next.config.js
+@@ -0,0 +1,6 @@
++/** @type {import('next').NextConfig} */
++const nextConfig = {
++  experimental: { appDir: true },
++  images: { remotePatterns: [] }
++};
++module.exports = nextConfig;
+diff --git a/apps/web/package.json b/apps/web/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea22b4ea5e4db32ddfa01062a1c05d9e6407b7d9
+--- /dev/null
++++ b/apps/web/package.json
+@@ -0,0 +1,37 @@
++{
++  "name": "web",
++  "private": true,
++  "scripts": {
++    "dev": "next dev",
++    "build": "next build",
++    "start": "next start"
++  },
++  "dependencies": {
++    "@dune/proto": "workspace:*",
++    "@dune/ui": "workspace:*",
++    "@next-auth/prisma-adapter": "1.0.7",
++    "@prisma/client": "5.8.0",
++    "@tanstack/react-query": "5.17.20",
++    "@trpc/client": "10.45.0",
++    "@trpc/react-query": "10.45.0",
++    "date-fns": "2.30.0",
++    "next": "14.1.0",
++    "next-auth": "4.24.6",
++    "jsonwebtoken": "9.0.2",
++    "react": "18.2.0",
++    "react-dom": "18.2.0",
++    "react-hook-form": "7.49.3",
++    "react-qr-reader": "3.0.0-beta-1",
++    "socket.io-client": "4.7.4",
++    "superjson": "1.13.3",
++    "zod": "3.22.4"
++  },
++  "devDependencies": {
++    "autoprefixer": "10.4.16",
++    "postcss": "8.4.32",
++    "tailwindcss": "3.3.5",
++    "@types/jsonwebtoken": "9.0.5",
++    "@types/react": "18.2.38",
++    "@types/react-dom": "18.2.17"
++  }
++}
+diff --git a/apps/web/postcss.config.js b/apps/web/postcss.config.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cbc2c7d8770dd519eeb059f155ee14aa9dc811a
+--- /dev/null
++++ b/apps/web/postcss.config.js
+@@ -0,0 +1,6 @@
++module.exports = {
++  plugins: {
++    tailwindcss: {},
++    autoprefixer: {}
++  }
++};
+diff --git a/apps/web/tailwind.config.ts b/apps/web/tailwind.config.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..57429ab2756971c1da8f0de95006018efb8dc083
+--- /dev/null
++++ b/apps/web/tailwind.config.ts
+@@ -0,0 +1,18 @@
++import type { Config } from 'tailwindcss';
++
++const config: Config = {
++  darkMode: 'class',
++  content: ['./app/**/*.{ts,tsx}', '../../packages/ui/src/**/*.{ts,tsx}'],
++  theme: {
++    extend: {
++      colors: {
++        accent: '#a855f7',
++        'bg-0': '#0B0B0F',
++        'bg-1': '#15151B'
++      }
++    }
++  },
++  plugins: []
++};
++
++export default config;
+diff --git a/apps/web/tsconfig.json b/apps/web/tsconfig.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2134055c6a88d268e17bc4d56118a7c58d0f7ad
+--- /dev/null
++++ b/apps/web/tsconfig.json
+@@ -0,0 +1,14 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "types": ["node", "next", "next/types/global", "next-auth"],
++    "baseUrl": ".",
++    "paths": {
++      "@/*": ["./*"],
++      "@/lib/*": ["lib/*"],
++      "@/app/*": ["app/*"]
++    }
++  },
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
++  "exclude": ["node_modules"]
++}
+diff --git a/apps/web/types/next-auth.d.ts b/apps/web/types/next-auth.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9dd854bf297a3a93a755c0338e3e9d4c4251127f
+--- /dev/null
++++ b/apps/web/types/next-auth.d.ts
+@@ -0,0 +1,24 @@
++import NextAuth from 'next-auth';
++import { JWT } from 'next-auth/jwt';
++
++declare module 'next-auth' {
++  interface Session {
++    apiToken?: string;
++    user?: {
++      id: string;
++      email?: string | null;
++      role: string;
++      name?: string | null;
++    };
++  }
++
++  interface User {
++    role: string;
++  }
++}
++
++declare module 'next-auth/jwt' {
++  interface JWT {
++    role?: string;
++  }
++}
+diff --git a/main.txt b/main.txt
+deleted file mode 100644
+index c2c6e2f31ec676f8eb6b9ae8a247f3e49b9f5278..0000000000000000000000000000000000000000
+--- a/main.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-jenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjenjen
+\ No newline at end of file
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c75d530c6eb3458f1bdacf8726ac7b30c323327
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,15 @@
++{
++  "name": "dune",
++  "private": true,
++  "version": "0.1.0",
++  "packageManager": "pnpm@8.14.1",
++  "scripts": {
++    "test": "node --test tests",
++    "lint": "node scripts/lint-stub.mjs",
++    "build": "turbo build",
++    "dev:web": "pnpm --filter @app/web dev",
++    "dev:api": "pnpm --filter @app/api dev",
++    "db:push": "pnpm --filter @app/api prisma db push",
++    "db:seed": "pnpm --filter @app/api prisma db seed"
++  }
++}
+diff --git a/packages/proto/package.json b/packages/proto/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bcc1aedc616587b1505530745304b3061a75286
+--- /dev/null
++++ b/packages/proto/package.json
+@@ -0,0 +1,8 @@
++{
++  "name": "@dune/proto",
++  "version": "0.1.0",
++  "private": true,
++  "type": "commonjs",
++  "main": "src/index.js",
++  "types": "src/index.d.ts"
++}
+diff --git a/packages/proto/src/index.d.ts b/packages/proto/src/index.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e48440e31c4b94ae05045b6af1a46c462dd98db
+--- /dev/null
++++ b/packages/proto/src/index.d.ts
+@@ -0,0 +1,12 @@
++import type { AppRouter } from '@app/api/router';
++
++export declare const MESSAGE_ENVELOPE: {
++  version: number;
++  fields: string[];
++};
++
++export declare function safetyNumber(publicKeyA: string, publicKeyB: string): string;
++export declare function applyTeenNightMode(now: Date, startMinutes?: number | null, endMinutes?: number | null): boolean;
++export declare function coinPackEuroToCoins(amountEuro: number): number;
++
++export type { AppRouter };
+diff --git a/packages/proto/src/index.js b/packages/proto/src/index.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..abe5f37d1c984912cab5a0b4c3e98184843828cd
+--- /dev/null
++++ b/packages/proto/src/index.js
+@@ -0,0 +1,35 @@
++const MESSAGE_ENVELOPE = {
++  version: 1,
++  fields: ['conversationId', 'senderId', 'ciphertext', 'type', 'sentAt']
++};
++
++function safetyNumber(publicKeyA, publicKeyB) {
++  const merged = [publicKeyA, publicKeyB].sort().join(':');
++  let hash = 0;
++  for (let i = 0; i < merged.length; i += 1) {
++    hash = (hash * 31 + merged.charCodeAt(i)) % 1_000_000;
++  }
++  return hash.toString().padStart(6, '0');
++}
++
++function applyTeenNightMode(now, startMinutes, endMinutes) {
++  const start = typeof startMinutes === 'number' ? startMinutes : 23 * 60;
++  const end = typeof endMinutes === 'number' ? endMinutes : 5 * 60;
++  const minutes = now.getHours() * 60 + now.getMinutes();
++  if (start < end) {
++    return minutes >= start && minutes < end;
++  }
++  return minutes >= start || minutes < end;
++}
++
++function coinPackEuroToCoins(amountEuro) {
++  const base = Math.round(amountEuro * 100);
++  return Math.round(base / 10) * 10;
++}
++
++module.exports = {
++  MESSAGE_ENVELOPE,
++  safetyNumber,
++  applyTeenNightMode,
++  coinPackEuroToCoins
++};
+diff --git a/packages/ui/package.json b/packages/ui/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..83d44341ab07dc710100c2b0b8c1276c76ef9219
+--- /dev/null
++++ b/packages/ui/package.json
+@@ -0,0 +1,12 @@
++{
++  "name": "@dune/ui",
++  "version": "0.1.0",
++  "private": true,
++  "main": "src/index.ts",
++  "peerDependencies": {
++    "react": "^18.2.0"
++  },
++  "dependencies": {
++    "lucide-react": "0.330.0"
++  }
++}
+diff --git a/packages/ui/src/components/chat.tsx b/packages/ui/src/components/chat.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..6580a5bb18d593b553b7efe905cd83957e8e0c4c
+--- /dev/null
++++ b/packages/ui/src/components/chat.tsx
+@@ -0,0 +1,145 @@
++import { useMemo } from 'react';
++import { LucideHome, LucideCompass, LucideQrCode, LucidePlus, LucideMessageCircle } from 'lucide-react';
++
++type BubbleProps = {
++  author: 'self' | 'other';
++  text: string;
++  time: string;
++};
++
++const bubbleStyles = {
++  self: 'bg-gradient-to-br from-[#b26cff] to-[#7c3aed] text-white rounded-2xl px-3 py-2 max-w-[78%] shadow-[0_2px_12px_rgba(124,58,237,.35)] ml-auto',
++  other: 'bg-[#15151B] text-[#EDEDED] rounded-2xl px-3 py-2 max-w-[78%] border border-[#23232A]'
++};
++
++export function MessageBubble({ author, text, time }: BubbleProps) {
++  return (
++    <div className="flex flex-col gap-1">
++      <div className={bubbleStyles[author]}>{text}</div>
++      <span className="text-xs text-neutral-400 mt-1 self-end">{time}</span>
++    </div>
++  );
++}
++
++type ChatViewProps = {
++  messages: BubbleProps[];
++  status?: 'online' | 'away' | 'offline';
++};
++
++export function ChatView({ messages, status = 'online' }: ChatViewProps) {
++  const presence = useMemo(() => ({
++    online: { label: 'En ligne', dot: 'bg-emerald-500' },
++    away: { label: 'Occupé', dot: 'bg-amber-500' },
++    offline: { label: 'Hors ligne', dot: 'bg-neutral-500' }
++  })[status], [status]);
++
++  return (
++    <section className="flex h-full flex-col bg-[#0B0B0F] text-neutral-200">
++      <header className="flex items-center gap-3 border-b border-[#1F1F26] px-4 py-3">
++        <div className="relative">
++          <div className="h-11 w-11 rounded-full bg-[#15151B]" />
++          <span className={`absolute -right-1 -bottom-1 h-3 w-3 rounded-full border-2 border-[#0B0B0F] ${presence.dot}`} />
++        </div>
++        <div>
++          <p className="font-semibold">Nova</p>
++          <p className="text-sm text-neutral-400">{presence.label}</p>
++        </div>
++      </header>
++      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-6">
++        {messages.map((message, index) => (
++          <MessageBubble key={`${message.time}-${index}`} {...message} />
++        ))}
++      </div>
++      <footer className="border-t border-[#1F1F26] px-4 py-3">
++        <div className="flex items-center gap-2 rounded-2xl bg-[#15151B] px-3 py-2">
++          <button className="rounded-full bg-[#23232A] p-2 text-neutral-300" aria-label="Ajouter un média">+</button>
++          <input className="flex-1 bg-transparent text-sm text-[#EDEDED] placeholder:text-neutral-500 focus:outline-none" placeholder="Envoyer un message sécurisé" />
++          <button className="rounded-full bg-[#23232A] p-2 text-neutral-300" aria-label="Envoyer un vocal">🎤</button>
++        </div>
++      </footer>
++    </section>
++  );
++}
++
++type Story = { id: string; label: string; seen?: boolean };
++
++type StoryBarProps = {
++  items: Story[];
++};
++
++export function StoryBar({ items }: StoryBarProps) {
++  return (
++    <div className="flex gap-4 overflow-x-auto px-4 py-3">
++      {items.map((item) => (
++        <div key={item.id} className="flex flex-col items-center gap-2 text-sm">
++          <div className={`flex h-16 w-16 items-center justify-center rounded-full border-2 ${item.seen ? 'border-[#1F1F26]' : 'border-transparent bg-gradient-to-tr from-[#b26cff] to-[#7c3aed]'}`}>
++            <div className="h-14 w-14 rounded-full bg-[#15151B]" />
++          </div>
++          <span className="text-neutral-300">{item.label}</span>
++        </div>
++      ))}
++    </div>
++  );
++}
++
++type BottomNavProps = {
++  active: 'home' | 'explore' | 'scan' | 'create' | 'messages';
++  unread?: number;
++  onSelect?: (tab: BottomNavProps['active']) => void;
++};
++
++const tabs = [
++  { id: 'home', label: 'Accueil', icon: LucideHome },
++  { id: 'explore', label: 'Explorer', icon: LucideCompass },
++  { id: 'scan', label: 'Scan QR', icon: LucideQrCode },
++  { id: 'create', label: 'Créer', icon: LucidePlus },
++  { id: 'messages', label: 'Messages', icon: LucideMessageCircle }
++] as const;
++
++export function BottomNav({ active, unread = 0, onSelect }: BottomNavProps) {
++  return (
++    <nav className="fixed inset-x-0 bottom-0 z-50 h-14 border-t border-[#1F1F26] bg-[#0B0B0F]/90 backdrop-blur">
++      <ul className="mx-auto flex h-full max-w-md items-center justify-around text-xs text-neutral-400">
++        {tabs.map(({ id, label, icon: Icon }) => (
++          <li key={id} className="relative flex flex-col items-center gap-1">
++            <button
++              type="button"
++              onClick={() => onSelect?.(id)}
++              className="flex flex-col items-center gap-1"
++            >
++              <Icon className={`h-5 w-5 ${active === id ? 'text-[#a855f7]' : 'text-neutral-500'}`} />
++              <span className={active === id ? 'text-[#EDEDED]' : ''}>{label}</span>
++              {id === 'messages' && unread > 0 && (
++                <span className="absolute -top-1 right-2 min-w-[1.2rem] rounded-full bg-red-500 px-1 text-[0.65rem] text-white">
++                  {unread}
++                </span>
++              )}
++            </button>
++          </li>
++        ))}
++      </ul>
++    </nav>
++  );
++}
++
++export function DemoChatSurface() {
++  const sampleMessages: BubbleProps[] = [
++    { author: 'other', text: 'Prêt pour la session nocturne ?', time: '21:04' },
++    { author: 'self', text: 'Oui, j’ai activé le mode focus 🔒', time: '21:05' },
++    { author: 'other', text: 'On teste la nouvelle économie de stickers ?', time: '21:06' }
++  ];
++
++  const stories: Story[] = [
++    { id: 'me', label: 'Moi', seen: true },
++    { id: 'nova', label: 'Nova' },
++    { id: 'eden', label: 'Eden' }
++  ];
++
++  return (
++    <div className="relative min-h-screen pb-16">
++      <StoryBar items={stories} />
++      <ChatView messages={sampleMessages} />
++      <BottomNav active="messages" unread={3} />
++    </div>
++  );
++}
+diff --git a/packages/ui/src/index.ts b/packages/ui/src/index.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed36107830d799bec61bba1c12ad41a9b8fd94fb
+--- /dev/null
++++ b/packages/ui/src/index.ts
+@@ -0,0 +1 @@
++export * from './components/chat';
+diff --git a/packages/ui/tsconfig.json b/packages/ui/tsconfig.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..aba7483b5e3d6a0e65198a0611b047554dc5ac8f
+--- /dev/null
++++ b/packages/ui/tsconfig.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "declaration": true,
++    "outDir": "dist"
++  },
++  "include": ["src/**/*"]
++}
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+new file mode 100644
+index 0000000000000000000000000000000000000000..286cf7f5643db97142c425abe7c8e5d5663f5d65
+--- /dev/null
++++ b/pnpm-workspace.yaml
+@@ -0,0 +1,3 @@
++packages:
++  - apps/*
++  - packages/*
+diff --git a/scripts/lint-stub.mjs b/scripts/lint-stub.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6868e902f324ba58ba7f1c502b7a436436f44da3
+--- /dev/null
++++ b/scripts/lint-stub.mjs
+@@ -0,0 +1 @@
++console.log('Lint stub: no-op for prototype stage.');
+diff --git a/tests/basic.test.js b/tests/basic.test.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..b2f49e84b5eadc080d4aef1afac4ce9e456edfa0
+--- /dev/null
++++ b/tests/basic.test.js
+@@ -0,0 +1,24 @@
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const { applyTeenNightMode, coinPackEuroToCoins, safetyNumber } = require('../packages/proto/src/index.js');
++
++test('teen night mode wraps over midnight', () => {
++  const late = new Date(0);
++  late.setHours(23, 30, 0, 0);
++  assert.equal(applyTeenNightMode(late, 23 * 60, 5 * 60), true);
++  const noon = new Date(0);
++  noon.setHours(12, 0, 0, 0);
++  assert.equal(applyTeenNightMode(noon, 23 * 60, 5 * 60), false);
++});
++
++test('coin packs round to nearest ten coins', () => {
++  assert.equal(coinPackEuroToCoins(4.99), 500);
++  assert.equal(coinPackEuroToCoins(0.99), 100);
++});
++
++test('safety number stable regardless ordering', () => {
++  const a = safetyNumber('alice-key', 'bob-key');
++  const b = safetyNumber('bob-key', 'alice-key');
++  assert.equal(a, b);
++  assert.equal(a.length, 6);
++});
+diff --git a/tests/e2e-flow.test.js b/tests/e2e-flow.test.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..0d75a79ad659d3503132d8f5411d55958f91ad78
+--- /dev/null
++++ b/tests/e2e-flow.test.js
+@@ -0,0 +1,17 @@
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const { safetyNumber, applyTeenNightMode } = require('../packages/proto/src/index.js');
++
++test('demo flow: account to sticker to night mode', () => {
++  const qrPayload = { uid: 'user123', publicIdentityKey: 'pubA', displayName: 'Nova', checksum: '123' };
++  const qrEncoded = Buffer.from(JSON.stringify(qrPayload)).toString('base64url');
++  const decoded = JSON.parse(Buffer.from(qrEncoded, 'base64url').toString('utf8'));
++  assert.equal(decoded.uid, 'user123');
++
++  const safety = safetyNumber('pubA', 'pubB');
++  assert.match(safety, /^\d{6}$/);
++
++  const teenNow = new Date(0);
++  teenNow.setHours(23, 15, 0, 0);
++  assert.equal(applyTeenNightMode(teenNow, 23 * 60, 5 * 60), true);
++});
+diff --git a/tsconfig.base.json b/tsconfig.base.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..f20af9a946aed2786e3781795c0707cb9a8854e2
+--- /dev/null
++++ b/tsconfig.base.json
+@@ -0,0 +1,17 @@
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "module": "ESNext",
++    "moduleResolution": "Node",
++    "jsx": "react-jsx",
++    "strict": true,
++    "esModuleInterop": true,
++    "skipLibCheck": true,
++    "baseUrl": ".",
++    "paths": {
++      "@proto/*": ["packages/proto/src/*"],
++      "@ui/*": ["packages/ui/src/*"],
++      "@app/api/*": ["apps/api/src/*"]
++    }
++  }
++}
+diff --git a/turbo.json b/turbo.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa8c111a1b5ae91f629b5782ecddf6171443f2a6
+--- /dev/null
++++ b/turbo.json
+@@ -0,0 +1,11 @@
++{
++  "$schema": "https://turbo.build/schema.json",
++  "pipeline": {
++    "build": {
++      "dependsOn": ["^build"],
++      "outputs": ["dist/**", "build/**"]
++    },
++    "lint": {},
++    "test": {}
++  }
++}
+ 
+EOF
+)

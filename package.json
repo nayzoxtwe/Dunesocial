@@ -1,0 +1,15 @@
+{
+  "name": "dune",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@8.14.1",
+  "scripts": {
+    "test": "node --test tests",
+    "lint": "node scripts/lint-stub.mjs",
+    "build": "turbo build",
+    "dev:web": "pnpm --filter @app/web dev",
+    "dev:api": "pnpm --filter @app/api dev",
+    "db:push": "pnpm --filter @app/api prisma db push",
+    "db:seed": "pnpm --filter @app/api prisma db seed"
+  }
+}
